@@ -103,5 +103,9 @@ unique(striped_bass$year) # 2000-2003
 MRIP.dirtrips(intdir = here("data"), common="SCUP", st=25, styr=1982, endyr=1985,trips=1, dom=dom1) # this appears to be the closest thing to correct so far...
 
 # MRIP.dirtrips(intdir = "https://www.st.nmfs.noaa.gov/st1/recreational/MRIP_Survey_Data/CSV/ps_1981_1989_csv", common="SCUP", st=25, styr=1982, endyr=1985,trips=1, dom=dom1)
+
+# From the data handbook ----
+dom1 <- list(wave=list(c(1,2,3,4,5,6))) 
+dirtrips_smackerel <- MRIP.dirtrips(intdir = here("data"), common = 'SPANISH MACKEREL', st = 37, styr = 2020, endyr = 2020, trips = 1, dom = dom1) # okay that worked - figure out how to extract all that data from the internet and build out the sub folders 
 ```
 
