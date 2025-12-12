@@ -68,12 +68,40 @@ head(all_dirtrips) # okay cool that worked.
 ```
 
 ```{r}
-#| label: depict effort
+#| label: data exploration
 
 directed_trips <- all_dirtrips |>
   filter(estimate_status == "FINAL" & does_directed_trips_meet_mrip_standard == "YES") |>
   select(year, target_species, state, fishing_mode, fishing_area, directed_trips) |>
   mutate(state = str_to_title(state)) |>
   mutate(across(c(target_species, fishing_mode, fishing_area), str_to_sentence))
+
+## Year check 
+atlantic_mackerel <- directed_trips |>
+  filter(target_species == "Atlantic mackerel") |>
+  arrange(year)
+unique(atlantic_mackerel$year) # 2004-2024, missing 2007
+
+black_sea_bass <- directed_trips |>
+  filter(target_species == "Black sea bass") |>
+  arrange(year)
+unique(black_sea_bass$year) # 2005-2025, missing 2011
+
+summer_flounder <- directed_trips |>
+  filter(target_species == "Summer flounder") |>
+  arrange(year)
+unique(summer_flounder$year) # 2001-2023 
+
+striped_bass <- directed_trips |>
+  filter(target_species == "Striped bass") |>
+  arrange(year)
+unique(striped_bass$year) # 2000-2003
+
+# Need atlantic croaker? 
+
+
+MRIP.dirtrips(intdir = here("data"), common="SCUP", st=25, styr=1982, endyr=1985,trips=1, dom=dom1) # this appears to be the closest thing to correct so far...
+
+# MRIP.dirtrips(intdir = "https://www.st.nmfs.noaa.gov/st1/recreational/MRIP_Survey_Data/CSV/ps_1981_1989_csv", common="SCUP", st=25, styr=1982, endyr=1985,trips=1, dom=dom1)
 ```
 
