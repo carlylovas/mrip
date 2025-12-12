@@ -1,0 +1,164 @@
+---
+title: "Global Fishing Watch Fleet Metrics"
+format: 
+  html:
+    toc: true
+    self-contained: true
+    fig-dpi: 300
+execute: 
+  echo: false
+  warning: false
+  message: false
+  comment: ""
+  fig.align: center
+---
+
+# Using Global Fishing Watch API for Fishing Fleet Activity
+
+```{r}
+# Load required libraries
+library(httr2)
+# library(jsonlite)
+library(rnaturalearth)
+library(sf)
+# library(leaflet)
+library(lubridate)
+library(tidyverse)
+library(scales)
+library(gmRi)
+# remotes::install_github("GlobalFishingWatch/gfwr", dependencies = TRUE)
+library(gfwr)
+
+# Shapefiles
+us_states <- ne_states("united states of america", returnclass = "sf") 
+canada = ne_states("canada", returnclass = "sf")
+
+# Set the theme
+theme_set(theme_gmri_simple())
+
+```
+
+
+
+
+```{r}
+#| label: querying with the gfw api package
+
+# Load api token from Renviron
+key <- Sys.getenv("GFW_TOKEN")
+
+
+# Example Query of the vessel API
+get_vessel_info(
+  query = 224224000,
+  search_type = "search")
+
+
+# Get all Events by type for a date:
+get_event(event_type = "ENCOUNTER",
+          start_date = "2020-01-01",
+          end_date = "2020-01-02")
+
+
+
+# Fishing events in user shapefile
+test_polygon <- sf::st_bbox(
+  c(xmin = -77.5,
+    xmax = -66,
+    ymin = 36.5,
+    ymax = 45),
+  crs = 4326) |>
+  sf::st_as_sfc() |>
+  sf::st_as_sf()
+
+# Read data in 
+get_event(
+  event_type = "FISHING",
+  start_date = "2020-10-01",
+  end_date = "2020-10-31",
+  region = test_polygon,
+  region_source = "USER_SHAPEFILE")
+
+
+# Getting Raster Data for a specific area:
+# Take the gulf of maine box as an example
+gom_sf <- read_sf(
+  get_timeseries_paths(region_group = "gmri_sst_focal_areas", 
+                       box_location = "cloudstorage")[["apershing_gulf_of_maine"]][["shape_path"]])
+```
+
+
+```{r}
+#| label: loading gfw effort
+# Load apparent fishing effortRaster Data for the Gulf of Maine
+gom_effort <- get_raster(
+  spatial_resolution = "HIGH",
+  temporal_resolution = "YEARLY",
+  group_by = "FLAG",
+  start_date = "2024-01-01",
+  end_date = "2024-12-31",
+  region_source = "USER_SHAPEFILE",
+  region = gom_sf
+  )
+
+# Make that an sf obj
+gom_sf <- gom_effort %>% 
+  st_as_sf(coords = c("Lon", "Lat"), crs = st_crs(4326), remove = F) 
+
+# Map the grid
+ggplot() +
+  geom_sf(data = gom_sf, aes(color = `Apparent Fishing Hours`)) +
+  geom_sf(data = us_states) +
+  geom_sf(data = canada) +
+  scale_color_viridis_c() +
+  theme_bw() +
+  theme_map_simple() +
+  coord_sf(crs = 4326, xlim = c(-70.9, -65), ylim = c(40.3, 45.2), expand = F) +
+  labs(title = "2024 Apparent Fishing Effort")
+```
+
+
+```{r}
+#| label: convert to grid
+
+
+# Convert to a grid for mapping
+gom_effort_grid <- gom_sf %>% 
+  st_make_grid(cellsize = 0.1, crs = 4326) %>% 
+  st_as_sf() %>% 
+  rename(geometry = x)
+
+
+# Join and summarise at the intermediate resolution
+gom_effort_tiles <- st_join(x = gom_effort_grid, y = gom_sf, join = st_contains) %>% 
+  group_by(Lat, Lon, `Time Range`, geometry) %>% 
+  summarise(apparent_effort = sum(`Apparent Fishing Hours`, na.rm = T),
+            .groups = "drop")
+
+
+# Map the grid
+ggplot() +
+  geom_sf(data = gom_effort_tiles, aes(fill = apparent_effort), color = "transparent") +
+  geom_sf(data = us_states) +
+  geom_sf(data = canada) +
+  viridis::scale_fill_viridis(
+    trans = scales::transform_log(),
+    labels = label_log(), na.value = "transparent", breaks = 10^c(0,1,2,3)) +
+  theme_bw() +
+  theme_map_simple() +
+  theme(legend.title.position = "top") +
+  coord_sf(
+    crs = 4326, 
+    xlim = c(-70.9, -65.75), ylim = c(40.3, 45.2), expand = F) +
+  labs(title = "2024 Apparent Fishing Effort",
+       fill = "Fishing Effort (hours)")
+```
+
+### Effort Fraction within Certain areas:
+
+There are a number of caveats about using GFW data
+
+```{r}
+
+```
+

@@ -1,0 +1,339 @@
+---
+title: "Building State/Fed MGMT Bound Assets"
+format: html
+---
+
+# MAFMC Shapefile Geoprocessing
+
+I went down a rabbit hole preparing some shapefiles for use in visuals. I decided to move that code here:
+
+```{r}
+#| label: packages
+# Load packages
+library(here)
+library(sf)
+library(rnaturalearth)
+library(gmRi)
+library(tidyverse)
+conflicted::conflict_prefer("filter", "dplyr", quiet = T)
+conflicted::conflict_prefer("lag", "dplyr", quiet = T)
+conflicted::conflict_prefer("select", "dplyr", quiet = T)
+
+
+# Load the northeast coast state boundaries
+us_states <- ne_states("united states of america", returnclass = "sf") 
+canada <- ne_states("canada", returnclass = "sf") 
+
+# # Just new england and mid-atlantic
+# atl_states <- ne_states("united states of america", returnclass = "sf") %>% 
+#   filter(postal %in% c("VA", "MD", "DE", "NJ", "NY", "CT", "RI", "MA", "ME", "NH", "NC", "SC", "GA", "FL"))
+
+# All the east and Gulf States we have data for
+atl_states <- ne_states("united states of america", returnclass = "sf") %>% 
+  filter(postal %in% c("VA", "MD", "DE", "NJ", "NY", "CT", "RI", "MA", "ME", "NH", "NC", "SC", "GA", "FL", "AL", "MS", "LA", "TX"))
+
+# Path to box resources
+shapes_path <- cs_path("res", "Shapefiles")
+
+# Theme
+theme_set(theme_gmri_simple())
+
+
+```
+
+
+```{r}
+#| label: load czmp state boundsmaritime boundaries
+#| 
+
+# State Boundaries By County, up to 3nm
+czmp <- read_sf(str_c(shapes_path, "CZMP_counties_2009/CZMP_counties_2009.shp"))
+
+# Filter those to East Coast by FIPS code, ughhh
+# Then union by state
+czmp_east <- czmp %>% 
+  mutate(state = case_match(
+    STATEFP,
+    "09" ~ "CT",
+    "10" ~  "DE",
+    "23" ~  "ME",
+    "24" ~  "MD",
+    "25" ~  "MA",
+    "33" ~  "NH",
+    "34" ~  "NJ",
+    "36" ~  "NY",
+    "44" ~  "RI",
+    "51" ~  "VA", 
+    # These were added
+    "37" ~ "NC",
+    "45" ~ "SC",
+    "13" ~ "GA",
+    "12" ~ "FL",
+    "28" ~ "MS",
+    "22" ~ "LA",
+    "01" ~ "AL",
+    # I didn't get MRIP for Texas, but this is its code
+    "48" ~ "TX",
+    .default = "dump"),
+    county_drop = if_else(
+      state == "NY" & 
+        NAME %in% c("Chautauqua","Erie", "Niagara", "Orleans", "Monroe", "Wayne", "Cayuga","Oswego", "Jefferson", "St. Lawrence", "Franklin"),
+      "dump",
+      "keep")) %>% 
+  filter(
+    state != "dump",
+    county_drop != "dump") %>% 
+  split(.$state) %>% 
+  map_dfr(
+    ~st_union(.x) %>% st_as_sf(), 
+    .id = "state") %>% rename(geometry = x)
+
+# Looking Good!
+ggplot() +
+  geom_sf(data = czmp_east, aes(fill = state), alpha = 0.5) +
+  geom_sf(data = atl_states)
+
+
+# Looking Good! even alabama
+ggplot() +
+  geom_sf(data = filter(czmp_east, state == "AL"), aes(fill = state), alpha = 0.5) +
+  geom_sf(data = atl_states)
+```
+
+
+```{r}
+#| label: load federal bounds
+
+# # Now what does the Federal Shapefile look like? Garbage
+# fed_waters <- read_sf(str_c(shapes_path, "USMaritimeLimitsAndBoundariesSHP/USMaritimeLimitsNBoundaries.shp")) %>% 
+#   filter(REGION == "Atlantic Coast and Gulf of Mexico")
+# fed_waters %>% glimpse()
+
+# Try a different one, close but weird
+# Source: https://noaa.hub.arcgis.com/datasets/noaa::federal-waters/explore?location=-2.557220%2C114.375208%2C1.26s
+# This one lets you subset by state, which is helpful though
+sf_use_s2(use_s2 = T)
+fed_waters <- read_sf(str_c(shapes_path, "Federal_Waters/US_MArine_Waters_Boundaries.geojson")) %>% 
+  #filter(State_Loca %in% c("VA", "MD", "DE", "NJ", "NY", "CT", "RI", "MA", "NH", "ME")) %>% 
+  filter(State_Loca %in% c("VA", "MD", "DE", "NJ", "NY", "CT", "RI", "MA", "NH", "ME", "NC", "SC", "FL", "GA", "AL", "MS", "LA", "TX")) %>% 
+  st_transform(5070) %>% 
+  # Little buffer trick to dissolve the scraps
+  st_buffer(1) %>% 
+  st_union() %>% 
+  st_buffer(dist = 1) %>% 
+  st_as_sf() %>% 
+  rename(geometry = x)
+
+# Plot Federal Bounds
+ggplot() +
+ geom_sf(data = fed_waters, aes(fill = "Federal Waters"), alpha = 0.4) +
+  geom_sf(data = atl_states) +
+  coord_sf(crs = 4326) +
+  labs(title = "Federal EEX - Notice Chunk by NH...")
+
+```
+
+### Closing Gaps
+
+There are some gaps between the federal waters layer and the state boundaries that we want to fill.
+
+Originally I was looking at an area off of New Hampshire, but this is relevant elsewhere.
+
+
+```{r}
+#| label: fix gap between state and feds
+
+# # Make a shapefile to cover both
+# study_area <-st_buffer(st_union(czmp_east, st_transform(fed_waters, 4269)), dist = 10000)
+# study_area %>% ggplot() + geom_sf()
+# 
+# # Find the gaps by subtracting both shapefiles from the study area
+# gaps <- st_difference(study_area, st_union(czmp_east, st_transform(fed_waters, 4269)))
+# gaps %>% ggplot() + geom_sf()
+
+
+# Make a shapefile to cover both
+sf::sf_use_s2(F)
+study_area <- st_union(
+  st_union(st_transform(czmp_east, 5070)), 
+  fed_waters) %>% 
+  st_buffer(1000) %>% 
+  st_union() %>% 
+  st_buffer(-1000)
+
+# # No weird edges, just a whole
+# study_area %>% ggplot() + geom_sf() + coord_sf(crs = 4326)
+
+# Patch the holes
+area_patch <- st_transform(st_as_sfc(st_bbox(c(
+  xmin = -71.2,
+  ymin = 41.25,
+  xmax = -70,
+  ymax = 43.55), crs = 4326)),
+  5070)
+
+# Union to fill gaps
+study_area_patched <- st_union(study_area, area_patch) 
+study_area_patched %>% ggplot() + geom_sf() + coord_sf(crs = 4326)
+
+# Subtract the inshore area to be left with federal
+ggplot(czmp_east) + geom_sf()
+new_fed <- st_difference(
+  study_area_patched, 
+  st_union(st_transform(czmp_east, 5070)))
+st_is_valid(new_fed)
+new_fed %>% ggplot() + geom_sf() + coord_sf(crs = 4326)
+
+# 1. Remove very small polygons (slivers)
+# First, if your result is a MULTIPOLYGON, convert to individual polygons
+federal_clean <- st_cast(new_fed, "POLYGON")
+
+# Calculate areas and remove tiny slivers
+areas <- st_area(federal_clean)
+area_threshold <- units::set_units(100000000, "m^2")  # Adjust based on your data scale
+federal_clean <- federal_clean[areas > area_threshold, ]
+federal_clean %>% ggplot() + geom_sf() + coord_sf(crs = 4326)
+
+
+# Did it work? - woohoo
+canada <- ne_states(country = "canada", returnclass = "sf")
+ggplot() +
+  geom_sf(data = czmp_east, aes(fill = state), alpha = 0.5) +
+  geom_sf(data = federal_clean, aes(fill = "Federal EEZ"), alpha = 0.5) +
+  geom_sf(data = us_states) +
+  geom_sf(data = canada) +
+  #coord_sf(crs = 4326, xlim = c(-77.5, -66), ylim = c(36.5, 45)) + # East Coast Only
+  coord_sf(crs = 4326, xlim = c(-105, -66), ylim = c(25, 45)) +
+  labs(
+    title = "MRIP Reporting Resolution",
+    fill = "State & Federal Zones")
+
+
+
+
+# # Did it work? - woohoo alabama is fine
+# canada <- ne_states(country = "canada", returnclass = "sf")
+# ggplot() +
+#   geom_sf(data = filter(czmp_east, state == "AL"), 
+#           aes(fill = state), alpha = 0.5) +
+#   geom_sf(data = federal_clean, aes(fill = "Federal EEZ"), alpha = 0.5) +
+#   geom_sf(data = us_states) +
+#   geom_sf(data = canada) +
+#   #coord_sf(crs = 4326, xlim = c(-77.5, -66), ylim = c(36.5, 45)) + # East Coast Only
+#   coord_sf(crs = 4326, xlim = c(-105, -66), ylim = c(25, 45)) +
+#   labs(
+#     title = "MRIP Reporting Resolution",
+#     fill = "State & Federal Zones")
+
+
+
+```
+
+
+## Saving
+
+```{r}
+# st_crs(czmp_east)
+# st_crs(federal_clean)
+
+# Tidy a little bit
+new_england_state_mgmt <- st_transform(czmp_east, st_crs(4326))
+new_england_fed_mgmt <- federal_clean %>% 
+  st_as_sf() %>% 
+  rename(geometry = x) %>% 
+  mutate(area_id = "Federal EEZ") %>% 
+  st_transform(st_crs(4326))
+
+
+# # I saved these before I included South Atlantic and Gulf of Mexico
+# st_write(new_england_state_mgmt, here::here("data/Polys/new_england_state_mgmt_waters.geojson"))
+# st_write(new_england_fed_mgmt, here::here("data/Polys/new_england_fed_mgmt_waters.geojson"))
+
+# I saved these once they were included
+st_write(new_england_state_mgmt, here::here("data/Polys/east_coast_state_mgmt_waters.geojson"), append = F)
+st_write(new_england_fed_mgmt, here::here("data/Polys/east_coast_fed_mgmt_waters.geojson"), append = F)
+
+
+```
+
+
+### Early Attempts to DIY Using st_buffer
+
+
+```{r}
+#| label: manually making bounding box to clip coastal zones
+
+# # Define Northern and Southern Clipping Points
+# # Use the eastern most point of Maine for northeast corner
+# me_coords <- st_coordinates(filter(atl_states, postal == "ME"))
+# east_max <- me_coords[which.max(me_coords[, "X"]),]
+# east_lim <- east_max[["X"]]
+# north_lim <- east_max[["Y"]]
+# 
+# # Use MD for west edge to keep the bay, and virginia's souuthern edge
+# west_lim <- st_bbox(filter(atl_states, postal == "MD"))[["xmin"]]
+# west_lim <- -77.3
+# south_lim <- round(st_bbox(filter(atl_states, postal == "VA"))[["ymin"]], 3) - .01
+# clip_box <- st_as_sfc(st_bbox(c(
+#   xmin = west_lim, 
+#   ymin = south_lim, 
+#   xmax = east_lim, 
+#   ymax = north_lim), crs = 4326))
+# 
+# # Plot the box I'll use to clip
+# ggplot() +
+#   geom_sf(data = clip_box, fill = "orange", alpha = 0.2) +
+#   geom_sf(data = atl_states)
+# 
+# # Transform
+# clip_box_proj <- st_transform(clip_box, 5070)
+
+```
+
+
+
+
+```{r}
+#| label: manually buffer state and fed areas
+
+# # Create the seaward buffers
+# states_proj <- st_transform(atl_states, 5070) # NAD83 / Conus Albers for US
+# 
+# # Create a buffer for state and federal waters
+# state_buffer <- st_buffer(st_union(states_proj), dist = 5556) # 3 nautical miles
+# fed_buffer <- st_buffer(st_union(states_proj), dist = 370400) # 200 nautical miles
+# 
+# # Now clip using our box for North and south edges
+# state_clipped <- st_intersection(state_buffer, clip_box_proj)
+# fed_clipped <- st_intersection(fed_buffer, clip_box_proj)
+# 
+# # Plot again, looks good
+# ggplot() + 
+#   geom_sf(data = state_clipped, alpha = 0.5, aes(fill = "State Waters")) + 
+#   geom_sf(data = fed_clipped, alpha = 0.5, aes(fill = "Fed EEZ")) + 
+#   geom_sf(data = atl_states) +
+#   coord_sf(crs = 4326)
+# 
+# 
+# # Finally, remove the statesides
+# lakes_cover <- st_transform(st_as_sfc(st_bbox(c(
+#   xmin = -80, 
+#   ymin = 41.8, 
+#   xmax = -74.8, 
+#   ymax = 45), crs = 4326)),
+#   5070)
+# us_states_proj <- st_union(st_transform(us_states, 5070))
+# states_mask <- st_union(us_states_proj, lakes_cover)
+# states_seaward <- st_difference(state_clipped, states_mask)
+# feds_seaward <- st_difference(fed_clipped, states_mask)
+# 
+# # Plot again
+# ggplot() + 
+#   geom_sf(data = states_seaward, alpha = 0.5, aes(fill = "State Waters")) + 
+#   geom_sf(data = feds_seaward, alpha = 0.5, aes(fill = "Fed EEZ")) + 
+#   geom_sf(data = atl_states) +
+#   coord_sf(crs = 4326)
+```
+
+
+

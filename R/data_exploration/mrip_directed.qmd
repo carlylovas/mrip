@@ -1,0 +1,79 @@
+---
+title: "MRIP Directed Trips"
+format: 
+  html:
+    toc: true
+    self-contained: true
+    fig-dpi: 300
+execute: 
+  echo: false
+  warning: false
+  message: false
+  comment: ""
+  fig.align: center
+---
+
+```{r}
+#| label: libraries, directory, filepaths 
+
+library(tidyverse)
+library(here)
+library(gmRi)
+library(readr)
+
+path <- "/Users/clovas/Library/CloudStorage/Box-Box/Mills Lab/Projects/MAFMC_SpeciesShifts/Data (non-confidential)/MRIP_Recreational/from_NOAA_Fisheries_Service_query/"
+```
+
+
+```{r}
+#| label: figure out how this works...
+
+# example <- paste0(path, "mrip_directed_trip (65).csv")
+# 
+# test1 <- read_csv(example, skip = 44)
+# 
+# target_species <- read_csv(example, skip = 4, n_max = 9, col_names = F, show_col_types = FALSE) |>
+#   filter(row_number() == 6) |>
+#   str_remove("�Species: ") 
+# 
+# cbind(test1, target_species)
+
+# okay now work this into a function to read in all csv files (twice, apparently...)
+```
+
+```{r}
+#| label: load in MRIP direct trip csv's from box 
+
+read_mrip.dirtrips <- function(file_path){
+  target_species <-  read_csv(file_path, skip = 4, n_max = 9, col_names = F, show_col_types = FALSE) |>
+    filter(row_number() == 6) |>
+    str_remove("�Species: ") # some UTF symbol that if I parse out doesn't work...
+  
+  effort_data <- read_csv(file_path, skip = 44, show_col_types = FALSE) |>
+    mutate(across(c("Year","PSE", "Directed Trips", "Directed Trips Lower 95% Confidence Limit","Directed Trips Upper 95% Confidence Limit"), as.numeric))
+  
+  out <- cbind(target_species, effort_data)
+  return(out)
+}
+
+all_dirtrips <- tibble("file_path" = list.files(path, pattern = ".csv", full.names = TRUE)) |>
+  mutate("data" = map(file_path, read_mrip.dirtrips)) |>
+  unnest(data) |>
+  select(!file_path) |>
+  janitor::clean_names()
+
+head(all_dirtrips) # okay cool that worked.
+# str(all_dirtrips)
+# summary(all_dirtrips)
+```
+
+```{r}
+#| label: depict effort
+
+directed_trips <- all_dirtrips |>
+  filter(estimate_status == "FINAL" & does_directed_trips_meet_mrip_standard == "YES") |>
+  select(year, target_species, state, fishing_mode, fishing_area, directed_trips) |>
+  mutate(state = str_to_title(state)) |>
+  mutate(across(c(target_species, fishing_mode, fishing_area), str_to_sentence))
+```
+

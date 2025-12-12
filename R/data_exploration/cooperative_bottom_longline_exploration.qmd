@@ -1,0 +1,1117 @@
+---
+title: "GOM Cooperative BLL Data Exploration"
+author: "Adam Kemberling"
+url: "https://github.com/adamkemberling"
+affiliation: "Gulf of Maine Research Institute"
+affiliation_url: "https://www.gmri.org"
+description: | 
+  Data Exploration and Index of Abundance Comparison of Longline vs. Trawl Data
+date: "Updated on: `r Sys.Date()`"
+format: 
+  html:
+    toc: true
+    self-contained: true
+execute: 
+  echo: false
+  warning: false
+  message: false
+  comment: ""
+  fig.align: center
+---
+
+# Gulf of Maine Cooperative Bottom Longline Survey
+
+The following section of text is from the NOAA technical memorandum NMFS-NE-249 which covers the design, purpose, and implementation of the Gulf of Maine Cooperative Research Longline Survey. The full report is stored with the data (acquired from David McElroy) in a folder within `Box/Res_Data/GOM_Longline_Survey/GOM_Cooperative_BLL`.
+
+The following section contains two subsets of the memorandum's abstract detailing the origin of the survey and some key details on methodology:
+
+> In 2013, the National Cooperative Research Program accepted and funded the Northeast Fisheries Science Center’s (NEFSC) Northeast Cooperative Research Branch to implement a bottom longline survey (LLS) in the western and central Gulf of Maine (GM). The objective of the proposed LLS was to increase sampling of several data-poor and depleted stocks specifically associated with rocky habitat, while also enhancing data collection for some data-rich stocks already seemingly well sampled on the bottom trawl survey (BTS). The LLS stratified random design was based on the NEFSC BTS stratification of depth and area, and this was further stratified by “rough” and “smooth” bottom type within the strata area to account for habitat. The survey area includes 6 BTS offshore strata: part of strata 28, 29, and 36 and all of strata 26, 27, and 37.
+
+> During 2014-2017, the survey sampled 45 station locations each spring (April-May) and fall (October-November), during the same seasonal period as the NEFSC research BTS, so that the LLS would overlap with the BTS not only spatially, but temporally as well, for comparability. Two commercial fishing vessels simultaneously conducted the survey. The survey longline gear is a 1 nautical mile/1,852 m groundline baited with frozen squid (Illex spp) on each of 1000 #12 semi-circle, easy-baiter hooks. A temperature/depth probe is secured on each anchor, as well as a current meter to measure the near-bottom velocities. The gear is set across slack tide for a minimum 2-hour soak time.
+
+```{r}
+#| label: load packages and data
+
+
+library(here)
+library(gmRi)
+library(tidyverse)
+library(readxl)
+library(gt)
+library(sf)
+library(patchwork)
+library(rnaturalearth)
+library(ggh4x)
+
+# Path to longline data
+ll_path <- "data/GOM_Cooperative_BLL"
+
+
+# Path to their jurisdiction shapefiles
+bounds_path <- cs_path("res", "Shapefiles/CouncilBoundryCCC")
+
+# Path to council jurisdictions
+strata <- read_sf(str_c(cs_path("res", "Shapefiles/BottomTrawlStrata"), "BTS_Strata.shp")) %>% 
+  mutate(STR2 = as.character(STR2))
+council_bounds <- read_sf(str_c(bounds_path, "Council_Scopes.shp")) %>% 
+  filter(Council %in% c("Mid-Atlantic", "New England", "South Atlantic") ) %>% 
+  st_make_valid()
+
+# Polygons for mapping
+new_england <- ne_states("united states of america", returnclass = "sf") 
+
+# Theme
+theme_set(theme_gmri(legend.position = "bottom"))
+```
+
+## Data & Documentation
+
+The package of data obtained from David McElroy contained the following datasets and documentation materials:
+
+1.  Catch
+2.  Length
+3.  TD
+4.  Data definitions
+5.  Survey Design Documentation
+
+I also requested shapefiles for the longline strata (which are slightly modified versions of trawl strata), which I also received.
+
+# Data Definitions
+
+The following table provides a readout of the data dictionary for the longline dataset, with field names and their descriptions.
+
+```{r}
+ll_data_dict <- readxl::read_xlsx(here(ll_path, "data_definitions.xlsx"))
+gt(ll_data_dict) %>% 
+  tab_header(title = "Data Dictionary",
+             subtitle = "Gulf of Maine Cooperative Longline Survey")
+```
+
+### Difference Between Trawl & LL Strata
+
+The cooperative longline survey uses modified strata for its sampling procedure which are shown below in bold.
+
+```{r}
+#| label: load longline strata
+longline_strata_subset_sampled <- read_sf(here::here("data/GOM_Cooperative_BLL/LLStrata.shp")) %>% 
+  mutate(STR2 = as.character(STR2))
+
+# These are the full strata, which are also sampled by the ll survey:
+trawl_strata_llsubset <- strata %>% 
+  filter(
+    SET_ == 1,
+    str_sub(STRATUMA, 3,4) %in% c(26:29, 36:37))
+
+# These are smaller
+ggplot(longline_strata_subset_sampled) +
+  geom_sf(
+    data =  trawl_strata_llsubset, 
+    aes(fill = STR2), alpha = 0.2) +
+  geom_sf(aes(fill = STR2), alpha = 0.8) +
+  scale_fill_gmri() +
+  geom_sf(data = new_england) +
+  coord_sf(xlim = c(-71, -65.8), ylim = c(41.6,44.2)) +
+  labs(
+    title = "Difference in Longline & Trawl Strata Footprints",
+    subtitle = "The opaque filled areas show the longline strata footprints,\ntransparent areas show the strata areas not sampled by longline")
+
+```
+
+## Loading the Datasets
+
+The three longline `.csv` files can be read in with any standard read function:
+
+```{r}
+# ll_catch  <- read_csv(here(ll_path, "BLLS_CATCH_Kemberling request.csv")) %>% janitor::clean_names()
+# ll_length <- read_csv(here(ll_path, "BLLS_LENGTH_Kemberling request.csv")) %>% janitor::clean_names()
+
+ll_catch  <- read_csv(here(ll_path, "BLLS_CATCH_Kemberling request.csv")) %>% janitor::clean_names()
+ll_length <- read_csv(here(ll_path, "BLLS_LENGTH_Kemberling request.csv")) %>% janitor::clean_names()
+ll_td     <- read_csv(here(ll_path, "TD_data_all.csv")) %>% janitor::clean_names()
+```
+
+I've changed the field names to be lowercase using `janitor::clean_names` for personal preference, but otherwise everything is as-is.
+
+The `BLL_CATCH` dataset contains the total abundance and weight of catch by species for each longline set. This is the primary dataset we would use for cpue estimates.
+
+The `BLL_LENGTH` dataset contains individual length measurements for subsets of the overall catch by species. This dataset provides context on the size structure of the catch.
+
+The `TD_data` dataset contains data from the CTD, and information about the stations.
+
+### Tidying Spatial Information
+
+When doing some exploratory mapping of the `BLL_CATCH` data I noticed some instances in the longline data where the `assigned_strata` is four digits long (usually 2) and is actually two strata sandwiched together.
+
+Following visual inspection of some maps, it did not appear to be the case that they were cases where the longline was set across strata, simply they had a label that was less specific to the specific strata, indicating instead the joint area.
+
+```{r}
+# Effort
+ll_catch %>% 
+  distinct(year, season, decdeg_beglon_set, decdeg_beglat_set) %>% 
+  group_by(year, season) %>% 
+  summarise(n_stations = n()) %>% 
+  ggplot(aes(year, n_stations, fill = season)) +
+  scale_fill_gmri() +
+  geom_col(position = "dodge", width = 0.7) +
+  labs(
+    x = "Year", y = "Stations", title = "Longline Survey Effort"
+  )
+```
+
+```{r}
+# # Which strata, got some data errors or some sampling on the line:
+# ll_catch %>% distinct(assigned_stratum)
+
+# These are the ones from the technical document
+# *technically* 36 and 29 are bisected by the hague line and its only areas west
+# *also technically* 36 is not fully sampled to the north, and 28+29 are not fully sampled south
+ll_strata_str2 <- c(26:29, 36:37)
+
+# Map out whatever is going on with the four digit strata assignments
+ggplot() + 
+  geom_sf(
+    data = trawl_strata_llsubset,
+    aes(fill = STR2), alpha = 0.25) +
+  geom_segment(
+    linewidth = 2,
+    data = filter(ll_catch, str_length(assigned_stratum) > 2) %>% 
+      distinct(assigned_stratum, decdeg_beglon_set, decdeg_beglat_set, decdeg_endlon_set, decdeg_endlat_set),
+    aes(
+      x = decdeg_beglon_set, xend = decdeg_endlon_set,
+      y = decdeg_beglat_set, yend = decdeg_endlat_set,
+      color = factor(assigned_stratum))) +
+  scale_color_gmri() +
+  scale_fill_gmri() +
+  geom_sf(data = new_england) +
+  coord_sf(xlim = c(-71, -65.8), ylim = c(41.6,44.2)) +
+  map_theme() +
+  labs(
+    title = "Bottom Longline Strata",
+    color = "Assigned Stratum",
+    subtitle = "Inconsistent Strata Assignments")
+```
+
+This step checks that, and then uses `sf` to reassign to a specific strata.
+
+```{r}
+#| label: assign new strata
+
+# Pull out the longline sets as unique linestrings
+ll_catch_sf <- ll_catch %>%
+  distinct(decdeg_beglon_set, decdeg_endlon_set, decdeg_beglat_set, decdeg_endlat_set) %>% 
+  rowwise() %>%
+  mutate(
+    geometry = st_sfc(
+      st_linestring(
+        matrix(
+          c(decdeg_beglon_set, decdeg_endlon_set, decdeg_beglat_set, decdeg_endlat_set), 
+          ncol = 2, byrow = FALSE)), 
+      crs = 4269), remove = FALSE) %>%
+  st_as_sf()
+
+
+# Assign the new strata
+ll_catch_sf_labelled <- st_join(
+  ll_catch_sf, 
+  trawl_strata_llsubset, 
+  join = st_within) %>% 
+  select(
+    decdeg_beglon_set, decdeg_endlon_set, decdeg_beglat_set, decdeg_endlat_set,
+    STRATA, STR2) %>% 
+  mutate(STR2 = as.character(STR2))
+```
+
+There are ten instances where the longline sets do indeed cross the boundaries between strata:
+
+```{r}
+
+
+# Why are there NA's, these are the ones that cross the lines
+filter(ll_catch_sf_labelled, is.na(STR2)) %>% 
+  ggplot() +
+  geom_sf(linewidth = 3, color = "black") +
+  geom_sf(
+    data = trawl_strata_llsubset,
+    aes(fill = STR2), alpha = 0.25) +
+  scale_fill_gmri() +
+  geom_sf(data = new_england) +
+  coord_sf(xlim = c(-71, -65.8), ylim = c(41.6,44.2)) +
+  map_theme() +
+  labs(title = "Bottom Longline Strata",
+       subtitle = "Failed Strata Assignments")
+```
+
+For these I am just leaving them as `NA` (not a long-term solution). The starting location would probably make sense to use, this would be consistent with the trawl survey (pretty sure).
+
+Most stations are okay though using their new strat assignments:
+
+```{r}
+# Confirm with a map that most were okay
+ggplot() +
+ geom_sf(
+    data =  trawl_strata_llsubset, 
+    aes(fill = STR2), alpha = 0.2) +
+  geom_sf(
+    data = longline_strata_subset_sampled,
+    aes(fill = STR2), alpha = 0.4) +
+  geom_sf(
+    linewidth = 1.5,
+    data = ll_catch_sf_labelled,
+    aes(color = STR2)) +
+  scale_color_gmri() +
+  scale_fill_gmri() +
+  map_theme() +
+  geom_sf(data = new_england) +
+  coord_sf(xlim = c(-71, -65.8), ylim = c(41.6,44.2)) +
+  labs(title = "Bottom Longline Survey Sample Coverage",
+       subtitle = "Strata ID's reassigned by overlay")
+
+
+# Join it back to the catch
+ll_catch_labelled <- ll_catch %>% 
+  left_join(st_drop_geometry(ll_catch_sf_labelled)) %>% 
+  filter(is.na(STR2) == F)
+
+```
+
+### Mid-Atlantic Species
+
+I was informed that there are 15 species of interest which the Mid-Atlantic Fisheries Management Council was interested in for this topic of shifting distributions across management jurisdictions:
+
+```{r}
+# These are the species that are managed by MAFMC
+# commented out if they aren't in bottom longline
+ma_species <- c(
+  "atlantic bluefish", 
+  "atlantic mackerel", 
+  "atlantic surfclam", 
+  "black sea bass",
+  "blueline tilefish",
+  "butterfish",
+  "chub mackerel",
+  "goosefish",
+  "longfin squid", 
+  "northern shortfin squid", 
+  "ocean quahog", 
+  "scup", 
+  "spiny dogfish",
+  "summer flounder", 
+  "tilefish")
+
+# # Check those species against the names in the longline data
+# ll_catch  %>% distinct(common_name) %>% arrange(common_name) %>% pull()
+
+# Don't need a key its only these 5, spelling is okay
+ll_mafmc <- ll_catch_labelled %>% 
+  filter(common_name %in% toupper(ma_species))
+```
+
+There are five species that are present in both the list of species managed by the MAFMC and among the species sampled as part of the cooperative longline survey:
+
+1.  Spiny dogfish\
+2.  Goosefish\
+3.  Tilefish\
+4.  Atlantic Mackerel\
+5.  Ocean Quahog
+
+Atlantic Mackerel and Ocean Quahog's are both special cases, where the species was sampled on one occassion.
+
+# Comparing Trawl vs. LL CPUE
+
+For this section, I just want to do a quick side-by-side of two indices of species abundances from the two surveys.
+
+As a simple entry-point, I am just going to get the area-stratified mean CPUE for the strata sampled by both gears.
+
+The catch/effort is area-weighted by the size of each strata so that the cpue of smaller strata carries less weight than the cpue of a larger strata when aggregating them to a value for the full area.
+
+## Longline CPUE Indices
+
+The mean abundance/set is first estimated each season for each of the longline strata. Then a weighted average of these estimates (weighted by the square km surface area of each strata) is taken to determine an area-wide cpue.
+
+The area-wide values are then scaled against the long-term average to return an index value.
+
+```{r}
+# Get effort by year, season, statum
+# The strata area could merge back in here
+ll_effort <- ll_catch_labelled %>% 
+  arrange(year) %>% 
+  distinct(
+    year, cruise6, season, station, STR2, 
+    decdeg_beglon_set, decdeg_beglat_set,
+    decdeg_endlon_set, decdeg_endlat_set, .keep_all = T) %>% 
+  group_by(year, season, STR2) %>% 
+  summarise(
+    n_stations = n(),
+    total_soak = sum(soak_duration_dh, na.rm = T))
+
+
+## Get the areas of the strata for weighting
+ll_area_effort <- longline_strata_subset_sampled %>% 
+  split(.$STR2) %>% 
+  map_dfr(~data.frame("area_m2" = as.numeric(st_area(.x))), .id = "STR2") %>% 
+  right_join(ll_effort)
+
+
+## Get the total area
+total_ll_area <- sum(distinct(ll_area_effort, STR2, area_m2) %>% pull(area_m2)) %>% as.numeric()
+
+
+# Get the total catch for mid-atlantic species
+# ll_mafmc %>% filter(common_name == "OCEAN QUAHOG") # one time
+mafmc_ll_catchsum <- ll_mafmc %>% 
+  arrange(common_name, year, season, station) %>% #glimpse()
+  group_by(common_name, year, season, STR2) %>% 
+  summarise(
+    total_biomass = sum(catchwt, na.rm = T),
+    total_abund = sum(catchnum, na.rm = T),
+    .groups = "drop")
+
+
+# Join the effort back to get weighting and standardize
+ll_index <- ll_area_effort %>% 
+  left_join(mafmc_ll_catchsum) %>% 
+  mutate(
+    biomass_hr = total_biomass / total_soak,
+    abund_hr = total_abund / total_soak,
+    area_frac = area_m2/total_ll_area) %>% 
+  group_by(common_name, year, season) %>% 
+  summarise(
+    area_weighted_biomass_cpue = weighted.mean(biomass_hr, area_frac),
+    area_weighted_abund_cpue = weighted.mean(abund_hr, area_frac),
+    .groups = "drop") %>% 
+  # Convert to an index
+  group_by(common_name, season) %>%
+  mutate(
+    # relative_biom = area_weighted_biomass_cpue / mean(area_weighted_biomass_cpue, na.rm = TRUE),
+    # relative_abund = area_weighted_abund_cpue / mean(area_weighted_abund_cpue, na.rm = TRUE),
+    
+    relative_biom = (area_weighted_biomass_cpue - mean(area_weighted_biomass_cpue, na.rm = TRUE) ) / sd(area_weighted_biomass_cpue, na.rm = TRUE),
+    relative_abund = (area_weighted_abund_cpue - mean(area_weighted_abund_cpue, na.rm = TRUE) ) / area_weighted_abund_cpue, na.rm = TRUE
+    ) %>%
+  ungroup()
+```
+
+```{r}
+#| fig-height: 7
+
+# Plot the biomass cpue index
+ll_bio_plot <- ggplot(
+  ll_index, aes(year, relative_biom, color = season)) +
+  geom_line(linewidth = 0.8) +
+  geom_point(size = 1) +
+  scale_color_gmri() +
+  # scale_x_continuous(
+  #   limits = c(2000, 2024),
+  #   breaks = seq(1970,2025, 10)) +
+  facet_wrap(~common_name, ncol = 1, scales = "free_y") +
+  labs(
+    title = "Area-Weighted\nBiomass/Hr CPUE",
+    y = "Index of Biomass",
+    subtitle = "Gulf of Maine Cooperative Longline Survey\nMid-Atlantic Managed Species")
+
+
+ll_abund_plot <- ggplot(
+  ll_index, aes(year, relative_abund, color = season)) +
+  geom_line(linewidth = 0.8) +
+  geom_point(size = 1) +
+  scale_color_gmri() +
+  facet_wrap(~common_name, ncol = 1, scales = "free_y") +
+  # scale_x_continuous(
+  #   limits = c(2000, 2024),
+  #   breaks = seq(1970,2025, 10)) +
+  labs(
+    title = "Area-Weighted\nAbundance/Hr CPUE",
+    y = "Index of Abundance",
+    subtitle = "Gulf of Maine Cooperative Longline Survey\nMid-Atlantic Managed Species")
+
+(ll_bio_plot | ll_abund_plot) + plot_layout(guides = "collect")
+```
+
+## Trawl CPUE Indices
+
+The trawl cpue indices are done similarly, they use the full trawl strata area for weighting (not the longline strata).
+
+```{r}
+# Load the trawl data within those same strata
+trawl_standard <- gmRi::gmri_survdat_prep(box_location = "cloudstorage") 
+
+trawl_mafmc <- trawl_standard %>% 
+  #mutate(comname = if_else(str_detect(comname, "tilefish"), "tilefish", comname)) %>% 
+  filter(
+    strat_num %in% ll_strata_str2,
+    comname %in% tolower(unique(ll_mafmc$common_name)))
+
+```
+
+```{r}
+
+# Add the area stratification details (catch/tow, normalized by seasonal effort)
+trawl_mafmc_lw <- trawl_mafmc %>% 
+  add_lw_info(box_location = "cloudstorage") %>% 
+  add_area_stratification(box_location = "cloudstorage")
+
+
+# Just use the sum of numlen for abundance and the bulk biomass (not length-weight based)
+trawl_cpue <- trawl_mafmc_lw %>% 
+    group_by(comname, est_year, season) %>% 
+    summarise(
+      total_abund        = sum(numlen, na.rm = T),
+      total_abund_adj    = sum(numlen_adj, na.rm = T),
+      total_biomass      = sum(biom_per_lclass, na.rm = T), # Trawl total, divyed across size classes
+      total_strat_abund  = sum(strat_total_abund_s, na.rm = T),
+      total_strat_biom   = sum(strat_total_biom_s, na.rm = T), 
+      .groups = "drop") 
+
+
+# Convert to an index
+trawl_index <- trawl_cpue %>% 
+  group_by(comname, season) %>%
+  mutate(
+    # relative_biom = total_strat_biom / mean(total_strat_biom, na.rm = TRUE),
+    # relative_abund = total_strat_abund / mean(total_strat_abund, na.rm = TRUE)
+    
+    relative_biom = (total_strat_biom - mean(total_strat_biom, na.rm = TRUE)) / sd(total_strat_biom, na.rm = T),
+    relative_abund = (total_strat_abund - mean(total_strat_abund, na.rm = TRUE)) / sd(total_strat_abund, na.rm = T)
+    
+    
+    ) %>%
+  ungroup()
+
+
+```
+
+```{r}
+#| fig-height: 7
+
+# Plot trawl cpue
+trawl_bio_plot <- ggplot(trawl_index, aes(est_year, relative_biom, color = season)) +
+  geom_line(linewidth = 0.8) +
+  geom_point(size = 1) +
+  scale_color_gmri() +
+  # scale_x_continuous(
+  #   limits = c(2000, 2024),
+  #   breaks = seq(1970,2025, 10)) +
+  facet_wrap(~comname, ncol = 1, scales = "free_y") +
+  labs(
+    title = "Area-Weighted\nBiomass/Hr CPUE",
+    y = "Index of Biomass",
+    subtitle = "New England Trawl Survey\nBottom Longline Strata\nMid-Atlantic Managed Species")
+
+# Plot trawl abundance index
+trawl_abund_plot <- ggplot(trawl_index, aes(est_year, relative_abund, color = season)) +
+  geom_line(linewidth = 0.8) +
+  geom_point(size = 1) +
+  scale_color_gmri() +
+  facet_wrap(~comname, ncol = 1, scales = "free_y") +
+  # scale_x_continuous(
+  #   limits = c(2000, 2024),
+  #   breaks = seq(1970,2025, 10)) +
+  labs(
+    title = "Area-Weighted\nAbundance/Hr CPUE",
+    y = "Index of Abundance",
+    subtitle = "New England Trawl Survey\nBottom Longline Strata\nMid-Atlantic Managed Species")
+
+(trawl_bio_plot | trawl_abund_plot) + plot_layout(guides = "collect")
+
+```
+
+## Combined Tracking
+
+Get the indices into the same table for side-by-side display, with columns by season.
+
+```{r}
+#| fig-height: 7
+
+
+trawl_smol <- trawl_index %>% 
+  select(
+    common_name = comname,
+    year = est_year,
+    season, 
+    relative_biom,
+    relative_abund) %>% 
+  mutate(
+    common_name = tolower(common_name),
+    season = str_to_title(season),
+    survey = "NEFSC Bottom Trawl") %>% 
+  filter(common_name %in% c("atlantic mackerel", "ocean quahog") == FALSE) 
+
+
+ll_smol <- ll_index %>% 
+  select(
+    common_name,
+    year,
+    season,
+    relative_biom,
+    relative_abund) %>% 
+  mutate(
+    common_name = tolower(common_name),
+    season = str_to_title(season),
+    survey = "Gulf of Maine Cooperative Longline")  %>% 
+  filter(common_name %in% c("atlantic mackerel", "ocean quahog") == FALSE) 
+
+
+indices <- bind_rows(trawl_smol, ll_smol) %>% 
+  rename(
+    `Biomass Index` = relative_biom,
+    `Abundance Index` = relative_abund) %>% 
+  pivot_longer(cols = ends_with("index"), names_to = "metric", values_to = "index") %>% 
+  mutate(season = fct_rev(season))
+
+
+
+
+# Plot the comparison
+ggplot(indices) +
+  geom_rect(
+    data = distinct(indices, survey, season, common_name) %>% 
+      mutate(xmin = 2013.5, xmax = 2024.5, ymin = -Inf, ymax = Inf),
+    aes(xmin = xmin, ymin = ymin, xmax = xmax, ymax = ymax),
+    fill = "gray90", alpha = 0.3) +
+  geom_line(
+    aes(year, index, color = survey, alpha = survey),
+    linewidth = 1, alpha = 1) +
+  rcartocolor::scale_color_carto_d() +
+  facet_nested(
+    common_name*season~metric, 
+    #scales = "free_y",
+    labeller = labeller(metric = label_wrap_gen(width = 7))) +
+  scale_x_continuous(
+    limits = c(1990, 2025),
+    breaks = seq(1970,2025, 10)) +
+  theme(
+    strip.text.y = element_text(angle = 0),
+    legend.position = "bottom") +
+  labs(
+    title = "Survey Index Comparison",
+    y = "CPUE Index (z)",
+    color = "Survey",
+    subtitle = "Trawl Survey Indices from GOM-BLL Survey Strata")
+
+
+
+```
+
+## Hook Saturation
+
+The nature of the longline survey means that there are cases where species to first arrive can prevent other species from being sampled.
+
+As an interesting check, I wanted to see what fraction of hooks was occupied by a species each season/year vs. empty.
+
+```{r}
+
+# These stations had various levels of catch saturation
+ll_mafmc |> 
+  group_by(cruise6, station, season) |>
+  summarise(n_caught = sum(catchnum)) |> 
+  mutate(percent_saturated = (n_caught/1000) * 100)
+
+# This is what percentage of the 1000? hooks were occupied
+ll_mafmc |> 
+  group_by(cruise6, station, season, common_name) |>
+  summarise(n_caught = sum(catchnum)) |> 
+  mutate(percent_saturated = (n_caught/1000) * 100)
+
+```
+
+# Capacity for Use as Indicator of Species Movements:
+
+The cooperative longline survey has coverage in spring and fall from 2014-2024. This survey provides the only medium/long-term source of fisheries independent hook and line sampling for species associated with hard-bottom habitats which are difficult to sample with trawl gear.
+
+To-date, there has been no sampling of black seabass, a species I would have expected to see in this dataset given their noted range expansions and their habitat associations.
+
+There are three species which are monitored by the MAFMC that have good sampling by this survey, those are goosefish, spiny dogfish, and to a lesser degree tilefish.
+
+This survey provides important insights for fisheries managers, but shows limited evidence for range expansion of Mid-Atlantic species at this time.
+
+```{r}
+#ll_mafmc %>% distinct(year)
+```
+
+# Splitting Trawl Survey into Regional Indices
+
+Need something to convey what potential this dataset has for monitoring species range shifts.
+
+```{r}
+# Idea:
+# take some species, goosefish
+# Plot as two timeseries, what the long-term abundance indices look like
+# Maybe split the trawl data up into North/South Sections similar in size to the longline index
+# Plot the long-term abundance indices (or actual cpue) changes across some "blocks" of the trawl strata
+# honestly should just use a simple lm cpue ~ strata, dist = negbin, or something
+# could do presence absence
+
+
+# ggplot() + geom_sf(data = new_england) +
+#   geom_sf(data = council_bounds, aes(fill = Council), alpha = 0.3 ) +
+#   geom_sf(data = longline_strata_subset_sampled, fill = "orange") +
+#   coord_sf(xlim = c(-81, -66), ylim = c(30, 47))
+
+```
+
+```{r}
+# Strata Blocks:
+block_groups_strata <- list(
+  "Gulf of Maine" = c(1260, 1270, 1280, 1290, 1360, 1370),
+  "Nantucket" = c(1090, 1100, 1110, 1120, 3460, 3480, 3520, 3530, 3540, 3550),
+  "NY Bight" = c(1010, 1020, 1030, 1040, 3060, 3070, 3080, 3090, 3100, 3110),
+  "Delmarva" = c(3240, 3250, 3260, 3270, 3280, 3290, 1690, 1700, 1710, 1720),
+  "Albemarle Sound" = c(1610, 1620, 1630, 1640, 3390, 3400, 3410, 3420, 3430, 3440),
+  #"Cape Fear" = c(7620, 7630, 7640, 7650, 7660, 7670, 8580, 8590, 8600, 8770)
+  "Cape Fear" = c(7560, 7570, 7580, 7590, 7600, 7610, 8540, 8550, 8560, 8570)
+)
+
+
+# Factor ordering
+zone_order <- c("Gulf of Maine", "Nantucket", "NY Bight", "Delmarva", "Albemarle Sound", "Cape Fear")
+
+
+# Get the sf geometries for these zones
+strata_blocks <- map_dfr(
+  block_groups_strata,
+  function(x){
+    filter(strata, STRATA %in% x) 
+  }, .id = "zone") %>% 
+  mutate(zone = factor(zone, levels = zone_order))
+
+
+# Map them
+(clusters_map <- ggplot() +
+  geom_sf(data = council_bounds, aes(color = Council), linewidth = 1, fill = "transparent") +
+  geom_sf(data = strata_blocks, aes(fill = zone), alpha = 0.6) +
+  geom_sf(data = new_england) +
+  coord_sf(xlim = c(-78, -64), ylim = c(33, 44)) +
+  scale_color_brewer(palette = "Set1") +
+  scale_fill_gmri() +
+  theme(legend.box = "vertical",
+        legend.position = "right") +
+  labs(
+    title = "Strata Clusters",
+    subtitle = "Thinking of using these regions as\nrepresentative areas of North to South\nfor population density changes"))
+```
+
+Get the average cpue for a species within these areas:
+
+```{r}
+# Pick a species
+species_pick <- "silver hake"
+# species_pick <- "atlantic croaker"
+# species_pick <- "spiny dogfish"
+```
+
+```{r}
+# Function to get stratified mean cpue
+# Just use the sum of numlen for abundance and the bulk biomass (not length-weight based)
+get_trawl_index <- function(trawl_lw){
+  
+  # Get effort by year, season, statum
+  # The strata area could merge back in here
+  seasonal_effort <- trawl_lw %>% 
+      distinct(
+        est_year, cruise6, season, station, stratum, decdeg_beglon, decdeg_beglat, .keep_all = T) %>% 
+      group_by(est_year, season, stratum) %>% 
+      summarise(n_stations = n(),
+                .groups = "drop")
+  
+  ## Get the areas of the strata for weighting
+  area_effort <- strata %>% 
+    filter(STRATA %in% unique(seasonal_effort$stratum)) %>% 
+    split(.$STRATA) %>% 
+    map_dfr(~data.frame("area_m2" = as.numeric(st_area(.x))), .id = "stratum") %>% 
+    right_join(seasonal_effort)
+  
+  
+  ## Get the total area for that block
+  total_area <- sum(
+    distinct(area_effort, stratum, area_m2) %>% 
+      pull(area_m2)) %>% 
+    as.numeric()
+  
+  
+  # Get the total catch for mid-atlantic species
+  # ll_mafmc %>% filter(common_name == "OCEAN QUAHOG") # one time
+  strata_catchsum <- trawl_lw %>% 
+    distinct(comname, est_year, season, stratum, station, abundance, biomass_kg) %>% 
+    group_by(comname, est_year, season, stratum) %>% 
+    summarise(
+      total_biomass = sum(biomass_kg, na.rm = T),
+      total_abund = sum(abundance, na.rm = T),
+      .groups = "drop")
+  
+  
+  # Join the effort back to get weighting and standardize
+  cpue_index <- area_effort %>% 
+    left_join(strata_catchsum) %>% 
+    mutate(
+      biomass_cpue = total_biomass / n_stations,
+      abund_cpue = total_abund / n_stations,
+      area_frac = area_m2/total_area) %>% 
+    group_by(comname, est_year, season) %>% 
+    summarise(
+      area_weighted_biomass_cpue = weighted.mean(biomass_cpue, area_frac),
+      area_weighted_abund_cpue = weighted.mean(abund_cpue, area_frac),
+      .groups = "drop") %>% 
+    # Convert to an index
+    group_by(comname, season) %>%
+    mutate(
+      # relative_biom = area_weighted_biomass_cpue / mean(area_weighted_biomass_cpue, na.rm = TRUE),
+      # relative_abund = area_weighted_abund_cpue / mean(area_weighted_abund_cpue, na.rm = TRUE)
+      
+      relative_biom = (area_weighted_biomass_cpue - mean(area_weighted_biomass_cpue, na.rm = TRUE) ) / sd(area_weighted_biomass_cpue, na.rm = T),
+      relative_abund = (area_weighted_abund_cpue - mean(area_weighted_abund_cpue, na.rm = TRUE) ) / sd(area_weighted_abund_cpue, na.rm = T)
+      
+      
+      
+      ) %>%
+    ungroup()
+  
+  return(cpue_index)
+  
+}
+
+
+
+
+# Run a test
+test_index <- trawl_standard %>% 
+  filter(
+    season == "Spring",
+    comname == species_pick,
+    stratum %in% as.character(block_groups_strata$`Albemarle Sound`)) %>% 
+  get_trawl_index() 
+# ggplot(test_index, aes(est_year, relative_abund, color = season)) +
+#   geom_line()
+```
+
+```{r}
+# run on all the areas
+test_indices <- map_dfr(
+  .x = block_groups_strata,
+  .f = possibly(
+    .f = function(x){
+    trawl_index <- trawl_standard %>% 
+      filter(
+        season == "Spring",
+        comname == species_pick,
+        stratum %in% x) %>% 
+      get_trawl_index()
+  }, 
+  otherwise = data.frame(
+    "comname" = species_pick,
+    "est_year" = unique(test_index$est_year),
+    "season" = "Spring")),
+  .id = "zone"
+  ) %>% 
+  mutate(zone = factor(zone, levels = zone_order))
+```
+
+### Plotting Comparisons of CPUE
+
+These are not scaled to the region and reflect what the relative densities are in the different areas:
+
+```{r}
+# Plot them all
+(ns_cpue <- test_indices %>% 
+  mutate(zone = factor(zone, levels = zone_order)) %>% 
+  ggplot(aes(est_year, area_weighted_abund_cpue, color = zone)) +
+  geom_point(alpha = 0.3, show.legend = F) +
+  geom_text(
+    data = test_indices %>% 
+      slice_max(order_by = est_year, by = zone, n = 1) %>% 
+      filter(area_weighted_abund_cpue > 2),
+    aes(est_year+5, area_weighted_abund_cpue, color = zone, label = zone),
+    fontface = "bold", size = 4, show.legend = F) +
+  scale_x_continuous(expand = expansion(mult = c(0.1, 0.2))) +
+  geom_smooth(method = "loess", se = F, show.legend = F) +
+  scale_color_gmri() +
+  labs(
+    title = str_c(str_to_title(species_pick), ": Regional Abundance CPUE"),
+    subtitle = "Spring CPUE from Offshore Trawl Survey",
+     y = "Abundance/Tow", 
+    x = "Year"))
+
+```
+
+```{r}
+clusters_map | ns_cpue
+```
+
+```{r}
+#| fig-height: 8
+test_indices %>% 
+  ggplot(aes(est_year, area_weighted_abund_cpue, color = zone)) +
+  geom_point(
+    data = select(test_indices, -zone),
+    aes(est_year, area_weighted_abund_cpue),
+    alpha = 0.4, color = "gray", size = 0.8) +
+  geom_point(alpha = 1) +
+  geom_smooth(method = "loess", se = F, loinewidth = 1) +
+  scale_color_gmri() +
+  facet_wrap(~zone, ncol = 1) +
+  labs(
+    title = str_c(str_to_title(species_pick), ": Regional Abundance CPUE"),
+    subtitle = "Spring CPUE, Shrimply Terrible")
+```
+
+### Plotting Local Relative Abundance Changes
+
+These are scaled to the long-term average of a region:
+
+```{r}
+  
+test_indices %>% 
+  mutate(zone = factor(zone, levels = zone_order)) %>% 
+  ggplot(aes(est_year, relative_abund, color = zone)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "loess", se = F) +
+  scale_color_gmri() +
+  labs(
+    title = str_c(str_to_title(species_pick), ": Regional Index of Abundance"),
+    subtitle = "Spring Abundance Index, Shrimply Terrible")
+
+```
+
+```{r}
+#| fig-height: 8
+
+test_indices %>% 
+  mutate(zone = factor(zone, levels = zone_order)) %>% 
+  ggplot(aes(est_year, relative_abund, color = zone)) +
+  geom_point(
+    data = select(test_indices, -zone),
+    aes(est_year, relative_abund),
+    alpha = 0.4, color = "gray", size = 0.8) +
+  geom_point(alpha = 1) +
+  geom_smooth(method = "loess", se = F, loinewidth = 1) +
+  scale_color_gmri() +
+  facet_wrap(~zone, ncol = 1) +
+  labs(
+    title = str_c(str_to_title(species_pick), ": Regional Index of Abundance"),
+    subtitle = "Spring Abundance Index, Shrimply Terrible")
+```
+
+# Comparing Area stratified abundance + biomass
+
+This function should be able to process area stratified abundance and biomass from the trawl survey data.
+
+It can be applied at the council scales by subsetting the catch data and the effort data down to those scales prior to running the function.
+
+Returns the mean cpue (abundance and biomass), the stratified totals, and indices of relative abundance (scaled by long term mean and sd) for the whatever group stratification we are interested in.
+
+```{r}
+# Filter down to data for each council boundary first, then do this, or do it in map()
+
+
+
+#' @title Process Area-Stratified Totals
+#'
+#' @param catch_data catch data for one or more species
+#' @param full_effort dataframe with all the effort, including no catch locations that might get filtered out of catch_data. Should match the region/council of catch data
+#' @param strata_sf the nmfs trawl strata
+#' @param effort_constant_km2 the average area in km2 of a tow, defaults to albatross
+#' @param ... additional group columns to estimate totals for: ex. year, season
+#'
+#' @returns
+#' @export
+#'
+#' @examples
+area_stratified_indices <- function(
+    catch_data, 
+    full_effort,
+    strata_sf, 
+    effort_constant_km2 = NULL,
+    ...){
+
+  # Constants:
+  if(is.null(effort_constant_km2)) {
+    # average area covered by an albatross standard tow in km2
+     effort_constant_km2 <- 0.0384
+  }
+ 
+  # Catchability coefficient, 
+  # ideally should shift for different species or species guilds
+  q <- 1     
+  
+  
+  # 1. Get the sampling effort by year, season, statum
+  seasonal_effort <- full_effort %>% 
+      distinct(..., stratum, decdeg_beglon, decdeg_beglat, .keep_all = T) %>% 
+      group_by(..., stratum) %>% 
+      summarise(
+          n_stations = n(),
+          .groups = "drop")
+  
+  # 2. Get the area m2 for each of the strata that were
+  sampled_strata <- unique(seasonal_effort$stratum)
+  area_effort <- strata %>% 
+    filter(STRATA %in% sampled_strata) %>% 
+    split(.$STRATA) %>% 
+    map_dfr(
+      ~data.frame("area_m2" = as.numeric(st_area(.x))), 
+      .id = "stratum") %>% 
+    right_join(seasonal_effort)
+  
+  ## Get the total area of all the strata in whatever region we're using
+  # Used to multiply back out for regional total: total area * regional_catch_per_area
+  total_area <- sum(
+    distinct(area_effort, stratum, area_m2) %>% 
+      pull(area_m2)) %>% 
+    as.numeric()
+
+  
+  # 3. Get the total abundance and biomass by species for each tow - collapses out numlen
+  # Get the total abundance and biomass by strata
+  strata_catchsum <- catch_data %>% 
+    distinct(comname, ..., stratum, station, abundance, biomass_kg) %>% 
+    group_by(comname, ..., stratum) %>% 
+    summarise(
+      total_biomass = sum(biomass_kg, na.rm = T),
+      total_abund = sum(abundance, na.rm = T),
+      .groups = "drop")
+  
+  # Join the effort (by strata & season) back in to get weighting 
+  # and for standardizing to cpue
+  area_cpue <- strata_catchsum %>% 
+    left_join(area_effort) %>% 
+    mutate(
+      biomass_cpue = total_biomass / n_stations,
+      abund_cpue = total_abund / n_stations,
+      area_frac = area_m2/total_area) %>% 
+    group_by(comname, ...) %>% 
+    summarise(
+      area_weighted_biomass_cpue = weighted.mean(biomass_cpue, area_frac),
+      area_weighted_abund_cpue = weighted.mean(abund_cpue, area_frac),
+      .groups = "drop")
+  
+  
+  # Get the total abundance and biomass that would be 
+  # multiply the catch rate by (the total area / area of one tow)
+  area_as_tows <- total_area / (effort_constant_km2* 1000000)
+  stratified_cpue <- area_cpue %>%   
+    mutate(
+      area_stratified_abund = area_weighted_abund_cpue * area_as_tows,
+      area_stratified_biomass = area_weighted_biomass_cpue * area_as_tows)
+    
+  # Change to an index relative to the long-term mean & sd
+  stratified_cpue_index <- stratified_cpue %>%   
+    group_by(comname, season) %>%
+    mutate(
+      relative_biom = 
+        (area_weighted_biomass_cpue - mean(area_weighted_biomass_cpue, na.rm = TRUE) ) / sd(area_weighted_biomass_cpue, na.rm = T),
+      relative_abund = (area_weighted_abund_cpue - mean(area_weighted_abund_cpue, na.rm = TRUE) ) / sd(area_weighted_abund_cpue)
+      ) %>%
+    ungroup()
+  
+  # return the index
+  return(stratified_cpue_index)
+  
+}
+```
+
+```{r}
+# Test it out
+
+# All the effort
+standard_effort <- distinct(trawl_standard, est_towdate, est_year, season, decdeg_beglon, decdeg_beglat, stratum)
+species_catch <- trawl_standard %>% filter(comname == "spiny dogfish")
+
+# The species catch
+stratified_indices_test <-  area_stratified_indices(
+    catch_data = species_catch,
+    full_effort = standard_effort,
+    strata_sf = strata, 
+    effort_constant_km2 = 0.0384, 
+    est_year, season)
+
+# Plot the totals
+stratified_indices_test %>% 
+  pivot_longer(
+    cols = starts_with("area_stratified"), 
+    values_to = "totals",
+    names_to = "stratified_total") %>% 
+  ggplot(aes(est_year, totals, color = season)) +
+  geom_line() +
+  scale_color_brewer(palette = "Set2") +
+  facet_grid(stratified_total~comname, scales = "free") +
+  scale_y_continuous(labels = scales::label_comma()) +
+  labs(x = "year", y = "stratified total")
+  
+  
+# Plot the weighted cpue
+stratified_indices_test %>% 
+  pivot_longer(
+    cols = starts_with("area_weighted"), 
+    values_to = "cpue",
+    names_to = "cpue_metric") %>% 
+  ggplot(aes(est_year, cpue, color = season)) +
+  geom_line() +
+  scale_color_brewer(palette = "Set2") +
+  facet_grid(cpue_metric~comname, scales = "free") +
+  scale_y_continuous(labels = scales::label_comma()) +
+  labs(x = "year", y = "Weighted Mean CPUE")
+  
+# Plot the relative abundance and biomass
+stratified_indices_test %>% 
+  pivot_longer(
+    cols = starts_with("relative_"), 
+    values_to = "index",
+    names_to = "index_metric") %>% 
+  ggplot(aes(est_year, index, color = season)) +
+  geom_line() +
+  scale_color_brewer(palette = "Set2") +
+  facet_grid(index_metric~comname, scales = "free") +
+  scale_y_continuous(labels = scales::label_comma()) +
+  labs(x = "year", y = "Index")
+```
+
+```{r}
+# Doing it for the council areas
+council_stations <- trawl_standard %>% 
+  distinct(est_towdate, est_year, season, stratum, decdeg_beglon, decdeg_beglat) %>% 
+  st_as_sf(
+    coords = c("decdeg_beglon", "decdeg_beglat"), 
+    remove = F, 
+    crs = 4326) %>% 
+  st_join(council_bounds, join = st_within) %>% 
+  filter(is.na(Council) == FALSE) %>% 
+  st_drop_geometry() %>% 
+  select(-c(Shape_Leng, Shape_Area, Notes, Sources, Area, Area_km2, Area_nm2)) %>% 
+  drop_na(Council)
+
+
+# Just do scup for now
+council_differences <- filter(trawl_standard, comname == "scup") %>%   left_join(council_stations) %>% 
+  split(.$Council) %>%
+  map_dfr(
+    function(.x){
+      area_stratified_indices(
+      catch_data = .x,
+      full_effort = filter(council_stations, Council == .x$Council[[1]]),
+      strata_sf = strata,
+      effort_constant_km2 = 0.0384,
+      est_year, season)
+    }, .id = "council"
+  ) %>% 
+  mutate(season = factor(season, levels = c("Spring", "Fall")))
+
+
+
+
+# Plot those jabronis
+council_differences %>% 
+  pivot_longer(
+    cols = starts_with("area_stratified"), 
+    values_to = "totals",
+    names_to = "stratified_total") %>% 
+  ggplot(aes(est_year, totals, color = council)) +
+  geom_point(alpha = 0.4, size = 0.5) +
+  # geom_line() +
+  geom_smooth(method = "loess", linewidth = 1, se = F) +
+  facet_nested(stratified_total~comname*season, scales = "free") +
+  scale_y_continuous(labels = scales::label_comma()) +
+  scale_color_brewer(palette = "Set2") +
+  labs(
+    x = "Year", 
+    y = "Area Stratified Totals", 
+    title = "Stratified Abundance and Biomass Totals by Council")
+```

@@ -1,0 +1,1261 @@
+---
+title: "Untitled"
+format: 
+  html:
+    toc: true
+    self-contained: true
+    fig-dpi: 300
+execute: 
+  echo: false
+  warning: false
+  message: false
+  comment: ""
+  fig.align: center
+  fig.height: 6
+---
+
+# State Survey Summary Metrics for Species Distribution Shifts
+
+```{r}
+#| label: packages
+# Load packages
+library(here)
+library(sf)
+library(rnaturalearth)
+library(gmRi)
+library(tidyverse)
+library(ggh4x)
+library(scales)
+library(Kendall)
+library(gtExtras)
+library(ggh4x)
+library(ggforce)
+library(ecodata)
+#remotes::install_github("coolbutuseless/ggpattern")
+library(ggpattern)
+library(patchwork)
+conflicted::conflict_prefer("filter", "dplyr", quiet = T)
+conflicted::conflict_prefer("lag", "dplyr", quiet = T)
+conflicted::conflict_prefer("select", "dplyr", quiet = T)
+
+
+# Load the northeast coast state boundaries
+
+# Polygons for mapping
+us_states <- ne_states("united states of america", returnclass = "sf") 
+canada = ne_states("canada", returnclass = "sf")
+
+
+# Load the Council Boundaries
+shapes_path <- cs_path("res", "Shapefiles")
+council_bounds <- read_sf(str_c(shapes_path, "CouncilBoundryCCC/Council_Scopes.shp")) %>% 
+  filter(Council %in% c("Mid-Atlantic", "New England", "South Atlantic") ) %>% 
+  st_make_valid() %>% 
+  mutate(Council = factor(Council, levels = c("New England", "Mid-Atlantic", "South Atlantic")))
+
+# Theme
+theme_set(
+  theme_gmri_simple(
+    panel.background = element_rect(fill = "transparent"),
+    panel.border = element_rect(fill = "transparent", linetype = 1, linewidth = 0.5, color = "#535353")))
+
+# Too many species, pick a handful
+shortlist <- c(
+  "atlantic croaker",
+  "atlantic mackerel", 
+  "atlantic striped bass", 
+  "black sea bass", 
+  "golden tilefish", 
+  "tilefish", 
+  "goosefish", 
+  "monkfish",
+  "scup",  
+  "spiny dogfish",
+  "summer flounder")
+
+
+# States North to South
+states_ns <- c(
+  "Maine",
+  "New Hampshire",
+  "Massachusetts",
+  "Rhode Island",
+  "Connecticut",
+  "New York",
+  "New Jersey",
+  "Delaware",
+  "Maryland",
+  "Virginia",
+  "North Carolina",
+  "South Carolina",
+  "Georgia",
+  "Florida",
+  "Alabama",
+  "Mississippi",
+  "Louisiana")
+
+# Levels for region ordering
+region_levels <- c(
+  "North Atlantic",
+  "Mid Atlantic",
+  "South Atlantic",
+  "Gulf of Mexico")
+
+# Levels for survey programs
+program_levels <- c("MENH Bottom Trawl Survey", "Massachusetts Trawl Survey", "NEAMAP Bottom Trawl Survey", "SEAMAP Coastal Trawl Survey")
+
+# Save path
+state_surveys_out <- cs_path("mills", "Projects/MAFMC_SpeciesShifts/Species_Shift_Metrics/State_Fishery_Independent")
+
+```
+
+
+
+
+```{r}
+#| label: mafmc species list and categories
+
+
+# Where the box project lives
+mafmc_path <- cs_path("mills", "projects/MAFMC_SpeciesShifts")
+#species_table <- googlesheets4::read_sheet(str_c(mafmc_path, "Work/Species_Management_List.gsheet"))
+
+# Local copy of the table
+species_table <- readxl::read_xlsx(here("data/Species_Management_List_gsheet.xlsx"))
+#species_table %>% distinct(species) %>% pull()
+```
+
+### Loading State Survey Data
+
+We have secured state survey data from different survey programs along the East Coast of the US. These include the Maine and New Hampshire trawl survey, the Massachusetts trawl survey, Rhode Island trawl survey, Connecticut trawl survey, and the NEAMAP survey which spans a number of states up the east coast.
+
+
+
+```{r}
+#| label: load MENH
+
+
+# Maine NH Trawl Survey
+menh_path <- cs_path("res", "Maine_NH_Trawl/data_2024")
+menh_tows <- read_csv(str_c(menh_path, "MaineDMR_Trawl_Survey_Tow_Data_2024-05-17.csv")) %>% 
+  janitor::clean_names()
+menh_catch <- read_csv(str_c(menh_path, "MaineDMR_Trawl_Survey_Catch_Data_2024-05-17.csv")) %>% 
+  janitor::clean_names()
+
+# Set up dates for matching with later
+menh_tows <- menh_tows  %>% 
+  mutate(
+    date = as.Date(start_date),
+    depth_m = start_depth_fathoms * 1.8288,
+    season = tolower(season)) %>% 
+  select(
+    tow_number, 
+    date, 
+    year, 
+    season, 
+    lat = start_latitude, 
+    lon = start_longitude, 
+    depth_m,
+    bottom_temp_c = bottom_water_temp_deg_c, 
+    bottom_salinity)
+
+# # Map Locations
+# menh_tows %>% 
+#   distinct(lon = start_longitude, lat = start_latitude) %>% 
+#   st_as_sf(coords = c("lon", "lat"), crs = 4326) %>% 
+#   ggplot() +
+#   geom_sf() +
+#   geom_sf(data = us_states) +
+#   geom_sf(data = canada) +
+#   coord_sf(xlim = c(-71, -67), ylim = c(41, 45))
+
+
+
+
+# Set up catch data
+menh_catch <- menh_catch %>% 
+  janitor::clean_names() %>% 
+  mutate(
+    common_name = tolower(common_name),
+    season = tolower(season))
+
+# Species are dumb in menh data
+# split, reverse, and collapse
+menh_catch$common_name <- sapply(str_split(menh_catch$common_name, " "), function(x) {
+  paste(rev(x), collapse = " ")
+})
+
+# Filter to mafmc managed species
+menh_catch <- menh_catch %>% 
+  mutate(
+    season = tolower(season),
+    common_name = str_remove_all(common_name, "[(]"),
+    common_name = str_remove_all(common_name, "[)]"),
+    common_name = str_remove_all(common_name, "dab|fluke|whiting|sand|sole|gray|"),
+    common_name = str_replace_all(common_name, "striped bass", "atlantic striped bass"),
+    common_name = str_replace_all(common_name, "black bass sea", "black sea bass"),
+    common_name = str_replace_all(common_name, "atlantic flounder", "flounder"),
+    common_name = str_replace_all(common_name, "stream gulf", "gulf stream"),
+    common_name = stringr::str_squish(common_name),
+    common_name = tolower(common_name)) %>%
+  filter(common_name %in% species_table$species) #%>%
+  #filter(str_detect(common_name, "flounder")) %>% distinct(common_name)
+
+
+# Do abundances to be consistent
+menh_abunds <- menh_tows %>% 
+  left_join(menh_catch) %>% 
+  group_by(
+    tow_number, 
+    date, 
+    year, 
+    season, 
+    common_name,
+    lat, 
+    lon, 
+    depth_m,
+    bottom_temp_c, 
+    bottom_salinity) %>% 
+  summarise(
+    abundance = sum(number_caught, na.rm = T),
+    biomass_kg = sum(expanded_weight_kg, na.rm = T),
+    .groups = "drop")
+
+
+```
+
+
+```{r}
+#| label: load MASS
+
+# Mass Trawl
+mass_path  <- cs_path("res", "MA_Trawl/Pull_20240716/Manipulated")
+mass_tows <- read_csv(str_c(mass_path, "MADMF_SVSTA_SW_2024.csv"))  %>% 
+  janitor::clean_names()
+mass_catch <- read_csv(str_c(mass_path, "Enterline_Stalen_1978-2023.csv")) %>% 
+  janitor::clean_names()
+
+# Trim tow information to essential info
+mass_tows <- mass_tows %>% 
+  mutate(date = as.Date(
+    str_c(
+      year, 
+      str_pad(month, side = "left", pad = "0", width = 2), 
+      str_pad(day, side = "left", pad = "0", width = 2),
+      sep = "-")),
+    season = tolower(season)) %>% 
+  rename(
+    lat = start_lat, 
+    lon = start_lon, 
+    depth_m = set_depth_m)
+
+
+# Tidy up the catch and get station totals
+mass_catch <- mass_catch %>% 
+  mutate(
+    date = as.Date(
+    str_c(
+      year, 
+      str_pad(month, side = "left", pad = "0", width = 2), 
+      str_pad(day, side = "left", pad = "0", width = 2),
+      sep = "-")),
+    season = tolower(season),
+    common_name = tolower(common_name),
+    common_name = if_else(common_name == "striped bass", "atlantic striped bass", common_name),
+    common_name = if_else(common_name == "goosefish", "monkfish", common_name),
+    common_name = tolower(common_name)) %>% 
+  filter(common_name %in% species_table$species) 
+
+
+# Get total abundance by station for each species
+mass_abunds <- mass_tows %>% 
+  select(-c(year, month, day, stratum)) %>% 
+  left_join(mass_catch) %>% #glimpse()
+  group_by(
+    station, 
+    date, 
+    year, 
+    season, 
+    common_name,
+    lat, 
+    lon, 
+    depth_m,
+    bottom_temp_c) %>% 
+  summarise(
+    abundance = sum(number_at_length, na.rm = T),
+    .groups = "drop") %>% 
+  mutate(station = as.character(station))
+```
+
+
+ > In the “NEAMAP_specimendata.rds” file, each row represents a single fish measured on NEAMAP, along with it’s length and an expansion factor. The expansion reflects the number of fish in the total catch of that species represented by that specimen. In other words, for a given species in a given tow, if you sum the expansion values, you wind up with the total catch in count for that species from that tow.
+
+
+```{r}
+#| label: load NEAMAP
+
+# NEAMAP
+neamap_path <- here::here("data/neamap")
+
+# Specimen data
+neamap_specimen <- read_rds(str_c(neamap_path, "/NEAMAP_specimendata.rds")) %>% 
+  janitor::clean_names()
+neamap_tows <- read_rds(str_c(neamap_path, "/NEAMAP_towdata.rds"))  %>% 
+  janitor::clean_names()
+
+
+# # Map
+# neamap_tows %>% 
+#   distinct(lon, lat) %>% 
+#   st_as_sf(coords = c("lon", "lat"), crs = 4326) %>% 
+#   ggplot() +
+#   geom_sf() +
+#   geom_sf(data = us_states) +
+#   coord_sf(xlim = c(-76, -71), ylim = c(35, 41.5))
+
+
+
+# Fix neamap names to match mafmc managmenet common names
+# Combine tows with specimen data
+neamap_mafmc <- neamap_specimen %>% 
+  mutate(
+    common_name = if_else(str_detect(common_name, "blue crab"), "blue crab", common_name),
+    common_name = if_else(common_name == "spot", "spot croaker", common_name),
+    common_name = if_else(common_name == "goosefish", "monkfish", common_name),
+    common_name = str_replace(common_name, "seabass", "sea bass"), 
+    common_name = if_else(str_detect(common_name, "striped bass"), "atlantic striped bass", common_name),
+    common_name = tolower(common_name)) %>% 
+  filter(common_name %in% species_table$species) %>% 
+  right_join(neamap_tows, by = join_by(station)) %>% 
+  mutate(season = tolower(season))
+
+
+
+# Tidy to total abiundances, we don't need individual size just station totals
+
+# Notes: weights arent always taken (in time, and within a sample)
+# Need to total the counts I think
+neamap_abunds <- neamap_mafmc %>% 
+  group_by(
+    station, 
+    date, 
+    year, 
+    season, 
+    common_name, 
+    lat, 
+    lon, 
+    depth_m = depth, 
+    bottom_temp_c = b_wt, 
+    bottom_salinity = b_sa) %>% 
+  summarise(
+    #abundance = n(),
+    #sequence_n = n_distinct(sequence),
+    abundance = sum(expansion, na.rm = T),
+    .groups = "drop") %>% 
+  mutate(year = as.numeric(year))
+
+# # Weird cases where sequence and n() don't match
+# neamap_mafmc %>% 
+#   filter(
+#     station == "NM20070901001",
+#     common_name == "butterfish")
+```
+
+
+
+
+```{r}
+#| label: seamap
+
+# Count total lines
+seamap_se <- here("data", "SEAMAP/Coastal Survey.ABUNDANCEBIOMASS.2025.csv")
+total_lines <- length(read_lines(seamap_se))
+
+# Calculate how many rows you want to read
+# e.g. drop 10 from bottom that are metadata
+rows_to_read <- total_lines - 10   
+
+# Then read only that many rows
+# remove the equal sign thing
+# reparse
+se_survey <- read_csv(
+  seamap_se,
+  col_types = cols(.default = "c"),
+  n_max = rows_to_read) %>%
+  mutate(across(everything(), ~ gsub('^="?([^"]*)"?$', '\\1', .))) %>%
+  mutate(across(everything(), readr::parse_guess)) %>% 
+  mutate(across(where(is_character), tolower)) %>% 
+  janitor::clean_names() 
+
+# Get unique tows:
+seamap_tows <- se_survey %>% 
+  distinct(projectname, vesselname, gearname, date, lon = longitudestart, lat = latitudestart, depthzone, tempbottom, salinitybottom) 
+
+# Can we subset species straight away, almost...
+# Missing 2 species: striped bass, tilefish
+se_shortlist <- se_survey %>%  
+  mutate(speciescommonname = if_else(speciescommonname == "whitebone porgy", "scup", speciescommonname)) %>% 
+  filter(speciescommonname %in% shortlist) %>% 
+  distinct(
+    date, 
+    lat = latitudestart, 
+    lon = longitudestart, 
+    common_name = speciescommonname, 
+    abundance = numbertotal, 
+    biomass = speciestotalweight)
+
+# Join abundances to tows
+seamap_abunds <- left_join(seamap_tows, se_shortlist) %>% 
+  mutate(
+    abundance = if_else(is.na(abundance), 0, abundance),
+    biomass = if_else(is.na(biomass), 0, biomass),
+    date = as.Date(date, format = "%m-%d-%Y"),
+    year = year(date))
+
+```
+
+
+
+### Centers of Abundance
+
+Centers of abundance or biomass (mean or median) can be estimated from annual (or seasonal) catch data. These metrics give an indication of where the "heart" of a the catch is from a given survey. Movement in this metric (North, South, E/W etc.) could be evidence that the species is shifting its distribution.
+
+
+```{r}
+
+
+safe_wtd_quantile <- function(x, w, probs = 0.5) {
+  if (sum(w > 0, na.rm = TRUE) > 0 && sum(!is.na(x)) > 0) {
+    Hmisc::wtd.quantile(x, weights = w, probs = probs, na.rm = TRUE)
+  } else {
+    NA_real_
+  }
+}
+
+
+## Calculate Weighted Quantile Locations from Survey Stations
+# Computes the center of biomass or abundance and leading/trailing edges from a set of quantile locations.
+# Uses estimates of a long-term center of effort (using locations without weighting by biomass/abundance) to provide an adjustment which removes how much the effort for that group departed from global effort
+weighted_positioning <- function(x, weighting_metric, ...){
+  
+  # Capture the weighting column name
+  # Set up summary column names to use non-standard evaluation
+  col_name  <- rlang::ensym(weighting_metric)   # Grab column name as a symbol
+  new_total <- paste0("total_", col_name)
+  new_med   <- paste0("med_", col_name)
+  
+  # capture grouping variables
+  group_vars <- rlang::enquos(...)
+  group_names <- purrr::map_chr(group_vars, rlang::as_name)
+  
+  # detect which grouping vars are period-like
+  period_vars <- intersect(group_names, c("year", "season", "month"))
+  period_syms <- rlang::syms(period_vars)
+  
+  # Get the all_tows movement (to remove any effect of sampling effort bias)
+  unique_locs   <- x %>% distinct(lon, lat)
+  
+  # Get the center and edge positions of the long-term effort
+  med_lat_all   <- median(unique_locs$lat, na.rm = T)
+  med_lon_all   <- median(unique_locs$lon, na.rm = T)
+  lat_trail_all <- quantile(unique_locs$lat, probs = 0.1, na.rm = T)
+  lon_trail_all <- quantile(unique_locs$lon, probs = 0.1, na.rm = T)
+  lead_lat_all  <- quantile(unique_locs$lat, probs = 0.9, na.rm = T)
+  lead_lon_all  <- quantile(unique_locs$lon, probs = 0.9, na.rm = T)
+  
+  
+  
+  #### DEBUGGING ####
+  # Need to ensure that we don't drop sampled locations when we're in group_by
+  
+  # Step 1: Find all locations *per temporal grouping* (e.g., year, season)
+  # We'll assume those are part of `...` (the first args you group by)
+  # build per-period location grid using only period vars the user actually grouped by
+  locs_per_period <- x %>%
+    dplyr::distinct(dplyr::across(dplyr::any_of(period_vars)), lon, lat)
+    
+  
+  # Step 2: distinct combinations of non-location, non-period group vars
+  # Get distinct non-period groups, (e.g., species)
+  non_period_groups <- setdiff(group_names, period_vars)
+  non_period_syms   <- rlang::syms(non_period_groups)
+  
+  
+  # Join locations back, then complete for all species (or other groups)
+  group_combos <- x %>% distinct(!!!rlang::syms(non_period_groups))
+  x_expanded <- tidyr::expand_grid(
+    locs_per_period,
+    group_combos)
+  
+  
+  #Now use a left_join() to reattach all your original data:
+  # Use group_by on the locations to eliminate duplicate stations
+  weighting_data <- x %>% 
+    distinct(!!!period_syms, lon, lat, !!!non_period_syms, {{col_name}}) %>% 
+    group_by(!!!period_syms, lon, lat, !!!non_period_syms) %>% 
+    summarise(
+      {{weighting_metric}} := sum({{weighting_metric}}, na.rm = T),
+      .groups = "drop")
+  
+  
+  # Join the weighting information (abundace/biomass) details over to the full set of stations
+  x_expanded <- x_expanded %>%
+    left_join(weighting_data)
+  
+  # Now you do the explicit coalesce() step, to fill missing records with zeros
+  x_expanded <- x_expanded %>%
+    mutate({{ weighting_metric }} := coalesce({{ weighting_metric }}, 0))
+  
+  
+  # Step 3: Proceed with getting all the group distribution metrics
+  x_expanded |>
+    group_by(...) %>%
+    summarise(
+      grp_n = n(),
+      # Add the global effort values
+      global_med_lat   = med_lat_all,   
+      global_med_lon   = med_lon_all,   
+      global_trail_lat = lat_trail_all,
+      global_trail_lon = lon_trail_all,
+      global_lead_lat  = lead_lat_all,  
+      global_lead_lon  = lead_lon_all,
+      
+      # Un-weighted total, averages of weighting metric
+      !!new_total := sum({{weighting_metric}}, na.rm = T),
+      !!new_med   := median({{weighting_metric}}, na.rm = T),
+      
+      # Average locations of the effort
+      grp_med_lat   = median(lat, na.rm = T),
+      grp_lead_lat  = quantile(lat, probs = 0.9, na.rm = T),
+      grp_trail_lat = quantile(lat, probs = 0.1, na.rm = T),
+      grp_med_lon   = median(lon, na.rm = T),
+      grp_lead_lon  = quantile(lon, probs = 0.9, na.rm = T),
+      grp_trail_lon = quantile(lon, probs = 0.1, na.rm = T),
+      
+      # Drift in effort from long-term average
+      lat_drift = grp_med_lat - global_med_lat,
+      lon_drift = grp_med_lon - global_med_lon,
+      lead_lat_drift = grp_lead_lat - global_lead_lat,
+      lead_lon_drift = grp_lead_lon - global_lead_lon,
+      lat_trail_drift = grp_trail_lat - global_trail_lat,
+      lon_trail_drift = grp_trail_lon - global_trail_lon,
+      
+      # Average weighted by abundance/biomass
+      med_lat       = safe_wtd_quantile(lat, w = {{weighting_metric}}, probs = 0.5),  
+      med_lon       = safe_wtd_quantile(lon, w = {{weighting_metric}}, probs = 0.5),
+      lat_lead   = safe_wtd_quantile(lat, w = {{weighting_metric}}, probs = 0.90),
+      lon_lead   = safe_wtd_quantile(lon, w = {{weighting_metric}}, probs = 0.90),
+      lat_trail  = safe_wtd_quantile(lat, w = {{weighting_metric}}, probs = 0.10),
+      lon_trail  = safe_wtd_quantile(lon, w = {{weighting_metric}}, probs = 0.10),
+      
+      # Centers/edges with the drift in effort removed
+      # Remove any drift in the effort due to sampling issues or chance
+      med_lat_adj   = med_lat - lat_drift,
+      med_lon_adj   = med_lon - lon_drift,
+      med_lead_lat_adj = lat_lead - lead_lat_drift,
+      med_lead_lon_adj = lon_lead - lead_lon_drift,
+      med_lat_trail_adj = lat_trail - lat_trail_drift,
+      med_lon_trail_adj = lon_trail - lon_trail_drift,
+      .groups = "drop") 
+}
+
+
+
+
+
+# Testing
+# Something weird is happening with seamap
+# There are multiple catch values for a species at the same station
+# menh_abunds %>%
+test <- seamap_abunds %>% 
+  filter(
+    year == 2000,
+    common_name %in% shortlist) %>% 
+  weighted_positioning(x = ., weighting_metric = abundance, common_name, year) 
+
+```
+
+
+```{r}
+#| label: estimating abundance centers
+
+
+# Make list of different datasets, or combine
+all_surveys <- bind_rows(
+  list(
+    "MENH Bottom Trawl Survey" = menh_abunds,
+    "Massachusetts Trawl Survey" = mass_abunds,
+    "NEAMAP Bottom Trawl Survey" = neamap_abunds,
+    "SEAMAP Coastal Trawl Survey" = seamap_abunds
+  ), .id = "survey_program") %>% 
+  mutate(
+    common_name = if_else(common_name == "goosefish", "monkfish", common_name),
+    season = str_to_title(season),
+    season = factor(season, levels = c("Spring", "Fall")),
+  survey_program = factor(
+    survey_program, levels = program_levels)) |>
+  filter(common_name %in% shortlist)
+
+
+## Get the annual distribution metrics 
+centerbio <- all_surveys  %>% 
+  split(.$survey_program) %>% 
+  map_dfr(
+    ~weighted_positioning(
+      .x, 
+      weighting_metric = abundance, 
+      survey_program, 
+      common_name, 
+      year)) %>% 
+  mutate(
+    survey_program = factor(survey_program, levels = program_levels),
+    year = as.numeric(year),
+    decade = floor_decade(year)) %>% 
+  filter(year >= 1990)
+
+
+
+# # Checking data for groups that fail
+# all_surveys %>% 
+#   filter(
+#     survey_program == "MENH Bottom Trawl Survey",
+#     common_name == "atlantic striped bass", 
+#     year == 2000
+#   )
+
+
+```
+
+
+### Adjusted Centers
+
+I added an option to the leading, trailing, edges function to correct for movement in the sampling effort. It takes whatever chunk of time we are estimating the leading, trailing, center metrics at, and it estimates how far the effort for that chunk of time deflects from the global (of whatever survey) center.
+
+
+```{r}
+#| label: showcase that effort can drift
+
+# Plot the drift between the long-term center
+ggplot(centerbio, aes(year, lat_drift)) +
+  geom_point(aes(color = common_name)) +
+  geom_smooth(method = "lm") +
+  geom_abline(slope = 1, intercept = 0, linetype = 1, alpha = 0.5, linewidth = 0.5) +
+  facet_grid(survey_program~., labeller = label_wrap_gen(width = 8)) +
+  labs(
+    title = "Difference in annual effort and all-data center of latitude",
+    subtitle = "Species Should not impact drift estimate...")
+
+
+
+# # What is going on with seamap...
+# # Stations with multiple abundance per species
+# seamap_centers <- centerbio %>% 
+# filter(survey_program == "SEAMAP Coastal Trawl Survey") 
+# 
+# # Fixed it, group centers are same for all species
+# seamap_centers %>% 
+#   ggplot(aes(year, lat_drift)) +
+#   geom_point(aes(color = common_name)) +
+#   geom_smooth(method = "lm") +
+#   geom_abline(slope = 1, intercept = 0, linetype = 1, alpha = 0.5, linewidth = 0.5) +
+#   facet_grid(survey_program~., labeller = label_wrap_gen(width = 8)) +
+#   labs(
+#     title = "Difference in annual effort and all-data center of latitude",
+#     subtitle = "Species Should not impact drift estimate...")
+
+
+```
+
+
+```{r}
+#| label: showcase corrected vs uncorrected centers
+# Plot them against one another by species
+ggplot(centerbio, aes(med_lat, med_lat_adj)) +
+  geom_point(aes(color = decade)) +
+  geom_smooth(method = "lm") +
+  geom_abline(slope = 1, intercept = 0, linetype = 1, alpha = 0.5, linewidth = 0.5) +
+  facet_grid(common_name~survey_program, scales = "free", labeller = label_wrap_gen(width = 8)) +
+labs(title = "Difference in adjusted and un-adjusted center of latitude")
+
+
+```
+
+
+```{r}
+#| label: did the correction change much?
+
+test_species <- "summer flounder"
+centerbio %>% 
+  filter(common_name == test_species) %>% 
+  ggplot() +
+  geom_segment(
+    aes(x = med_lon, xend = med_lon_adj, y = med_lat, yend = med_lat_adj),
+    linewidth = 0.3) +
+  geom_point(aes(med_lon, med_lat, color = "Standard Approach")) +
+  geom_point(aes(med_lon_adj, med_lat_adj, color = "Effort Adjusted Approach")) +
+  geom_sf(data = us_states) +
+  scale_color_gmri() +
+  coord_sf(ylim = c(33, 45), xlim = c(-67.7,-79.2)) +
+  labs(
+    title = test_species,
+    subtitle = "Center of Abundance Method Comparison",
+    y = "Latitude",
+    x = "Longitude",
+    color = "Method") 
+
+
+```
+
+
+```{r}
+#| lable: load nmfs data
+
+
+# Take one year of trawl data: 2011 was a good year for spiny dogfish, maybe do 2010 too since that was on the edge of the temperature changes
+trawl <- gmRi::gmri_survdat_prep(survdat = NULL, survdat_source = "most recent", box_location = "cloudstorage") %>% 
+  filter(est_year %in% c(2000:2020))
+
+# Get the stations from that year
+trawl_stations <- gmRi::get_survdat_tows(trawl)
+
+# Join the mackerel abundance/biomass over
+nmfs_mackerel <- trawl_stations %>% 
+  left_join(filter(trawl, comname == "atlantic mackerel")) %>% 
+  mutate(
+    common_name = coalesce(comname, "atlantic mackerel"),    
+    abundance = coalesce(abundance, 0),
+    biomass_kg = coalesce(biomass_kg, 0)) %>% 
+  distinct(
+    year = est_year, 
+    season = season, 
+    common_name, 
+    lon = decdeg_beglon, 
+    lat = decdeg_beglat, 
+    abundance, 
+    biomass_kg)
+
+# Do the weighted centers
+nmfs_mack_centers <- nmfs_mackerel %>% 
+  weighted_positioning(weighting = biomass_kg, year, season, common_name)
+
+
+# Plot the nmfs center of biomass difference 
+nmfs_mack_centers %>% 
+  ggplot() +
+  geom_segment(
+    aes(x = med_lon, xend = med_lon_adj, y = med_lat, yend = med_lat_adj),
+    linewidth = 0.3) +
+  geom_point(aes(med_lon, med_lat, color = "Standard Approach")) +
+  geom_point(aes(med_lon_adj, med_lat_adj, color = "Effort Adjusted Approach")) +
+  geom_sf(data = us_states) +
+  geom_sf(data = canada) +
+  scale_color_gmri() +
+  coord_sf(ylim = c(33, 45), xlim = c(-66.5,-79.2)) +
+  labs(
+    title = "Atlantic Mackerel, NMFS Trawl Survey",
+    subtitle = "Center of Biomass Method Comparison",
+    y = "Latitude",
+    x = "Longitude",
+    color = "Method") 
+
+
+# Lineplot
+nmfs_mack_centers %>% 
+pivot_longer(
+  cols = c(
+    med_lat, med_lat_adj,),
+  names_to = "metric",
+  values_to = "lat") %>%
+  mutate(
+    season = fct_rev(season),
+    method = if_else(str_detect(metric, "adj"), "Effort Adjusted", "Standard Approach")) %>% 
+  ggplot(aes(year, lat, color = method, shape = season)) +
+    geom_point() +
+    geom_line(alpha = 0.4, linewidth = 0.4) +
+  geom_smooth(method = "lm", se = F) +
+  scale_color_gmri() +
+  facet_wrap(~season) +
+  labs(title = "Atlantic Mackerel", subtitle = "Adjusting center of biomass for sampling effort unnevenness")
+```
+
+
+```{r}
+#| label: difference in seasonal effort centers
+
+# Spring 2020 & Fall 2017 have large differences
+nmfs_mack_centers %>% 
+  #filter(year %in% c(2017, 2020)) %>% 
+  ggplot() +
+  geom_segment(aes(x = year, xend = year, y = global_med_lat, yend = grp_med_lat), linetype = 3, linewidth = 0.5) +
+  geom_point(aes(year, global_med_lat, color = "Average Median Latitude"), size = 2) +
+  geom_point(aes(year, grp_med_lat, color = "SeasonxYear Median Latitude"), size = 2) +
+  scale_color_gmri() +
+  facet_wrap(~fct_rev(season)) +
+  labs(title = "Difference Between Typical Effort and Actual Seasonal Effort")
+
+```
+
+
+```{r}
+#| label: showcase impact on missing effort
+
+# Take one Species (Mackerel)
+
+# Use the nmfs data
+# Plot the effort centers, and connect the original and new centers
+
+```
+
+## Center of Abundance Maps
+
+
+
+```{r}
+## Maps ----
+ggplot() +
+  geom_sf(data = us_states) + 
+  geom_sf(data = canada) + 
+  geom_sf(data = council_bounds, fill = "transparent") +
+  geom_point(
+    data = centerbio,
+    aes(x = med_lon, y = med_lat, fill = decade, shape = survey_program), 
+    size = 2, stroke = 0.1) +
+  rcartocolor::scale_fill_carto_d(palette = "Temps", na.translate = F) +
+  scale_shape_manual(values = c(21, 22, 23, 24)) +
+  facet_wrap(~str_to_title(common_name), nrow = 2) +
+  scale_x_continuous(breaks = c(-80, -77, -74, -71, -68)) +
+  coord_sf(ylim = c(33, 45), xlim = c(-67.7,-79.2)) +
+  guides(
+    fill = guide_legend(nrow = 4, override.aes = list(size = 6, alpha = 1, shape = 22)),
+    shape = guide_legend(nrow = 4, override.aes = list(alpha = 1, size = 3))) + 
+  labs(
+    title = "Center of Abundance",
+    y = "Latitude",
+    x = "Longitude",
+    shape = "Survey\nProgram",
+    fill = "Decade") 
+
+# 
+ggsave(str_c(state_surveys_out, "StateSurveys_Centroid_Maps.png"), width = 12, bg = "white")
+```
+
+### Center of Abundance, Decadal
+
+
+```{r}
+# Try again but do a different symbology that better tracks either the direction or some centroid/hull
+
+
+# Option 1: centroid/hull
+# Get some decadal metric
+
+## Dist metrics, decadal
+centerbio_decade <- all_surveys |>
+  drop_na(common_name) %>% 
+  filter(
+    common_name %in% shortlist, 
+    year >= 1990) %>% 
+  mutate(
+    year = as.numeric(year),
+    decade = floor_decade(year)) %>% 
+  split(.$survey_program) %>% 
+  map_dfr(~weighted_positioning(.x, weighting_metric = abundance, survey_program, common_name, year)) %>% 
+  mutate(
+    survey_program = factor(survey_program, levels = program_levels),
+    year = as.numeric(year),
+    decade = floor_decade(year)) 
+
+# Decadal Hull?
+
+
+# Plot
+map_raw <- ggplot() +
+  geom_sf(data = us_states) + 
+  geom_sf(data = canada) + 
+  geom_sf(data = council_bounds, fill = "transparent") +
+  geom_line(
+    data = centerbio_decade,
+    aes(x = med_lon, 
+        y = med_lat, 
+        group = survey_program), 
+    linewidth = 0.5, color = "black") +
+  geom_point(
+    data = centerbio_decade,
+    aes(x = med_lon, 
+        y = med_lat, 
+        fill = decade, shape = survey_program), 
+    size = 2, color = "black", stroke = 0.1) +
+  scale_shape_manual(values = c(21, 22, 23, 24)) +
+  rcartocolor::scale_fill_carto_d(palette = "Temps") +
+  facet_wrap(~str_to_title(common_name), nrow = 2) +
+  scale_x_continuous(breaks = c(-80, -77, -74, -71, -68)) +
+  coord_sf(ylim = c(33, 45), xlim = c(-67.7,-79.2)) +
+  guides(
+    fill = guide_legend(nrow = 4, override.aes = list(size = 6, alpha = 1, shape = 22)),
+    shape = guide_legend(nrow = 4, override.aes = list(alpha = 1, size = 3, fill = "transparent"))) + 
+  labs(
+    title = "Decadal Center of Abundance",
+    y = "Latitude",
+    x = "Longitude",
+    shape = "Survey\nProgram",
+    fill = "Decade") 
+
+
+
+
+
+map_raw 
+
+# ggsave(str_c(state_surveys_out, "StateSurveys_DecadalCentroid_Maps.png"), width = 12, bg = "white")
+```
+
+
+```{r}
+# Option 2: direction
+# Get the trend over some period, or take the difference between years
+# Use an arrow or similar for direction
+
+
+
+# Just mackerel
+centerbio_decade %>% 
+  filter(common_name == "atlantic mackerel") %>% 
+  ggplot() +
+   geom_line(
+    aes(x = med_lon, 
+        y = med_lat, 
+        group = survey_program), 
+    linewidth = 0.35, color = "black", linetype = 1) +
+  geom_sf(data = us_states) + 
+  geom_sf(data = canada) + 
+  geom_sf(data = council_bounds, fill = "transparent") +
+  geom_point(
+    aes(x = med_lon, 
+        y = med_lat, 
+        fill = decade, shape = survey_program), 
+    size = 2, color = "black", stroke = 0.1) +
+  scale_shape_manual(values = c(21, 22, 23, 24)) +
+  rcartocolor::scale_fill_carto_d(palette = "Temps") +
+  facet_wrap(~str_to_title(common_name), nrow = 2) +
+  scale_x_continuous(breaks = c(-80, -77, -74, -71, -68)) +
+  coord_sf(ylim = c(33, 45), xlim = c(-67.7,-79.2)) +
+  guides(
+    fill = guide_legend(nrow = 4, override.aes = list(size = 6, alpha = 1, shape = 22)),
+    shape = guide_legend(nrow = 4, override.aes = list(alpha = 1, size = 3, fill = "transparent"))) + 
+  labs(
+    title = "Decadal Center of Abundance",
+    y = "Latitude",
+    x = "Longitude",
+    shape = "Survey\nProgram",
+    fill = "Decade") 
+
+```
+
+
+
+## Latitude Center of Abundance by Survey
+
+```{r}
+centerbio %>% 
+  # filter(common_name == "atlantic mackerel") %>% 
+  ggplot() +
+  # geom_ribbon(aes(
+  #   year, ymin = lat_trail, ymax = lat_lead, fill = survey_program, alpha = 0.4)) +
+  geom_point(
+    aes(year, med_lat, color = survey_program, shape = "Center of Abundance"), 
+    size = 1.5, alpha = 0.7) + 
+  geom_smooth(
+    aes(year, med_lat, 
+        group = survey_program, 
+        linetype = "Center of Abundance",
+        color = survey_program),
+    se = F, method = "lm", linewidth = 1) +
+  geom_point(
+    aes(year, lat_lead, color = survey_program, shape = "Leading Edge"), 
+    size = 1, alpha = 0.7) + 
+  geom_smooth(
+    aes(year, lat_lead, 
+        group = survey_program, 
+        color = survey_program, 
+        linetype = "Leading Edge"),
+    se = F, method = "lm", linewidth = 1) +
+  geom_point(
+    aes(year, lat_trail, color = survey_program, shape = "Trailing Edge"), 
+    size = 1, alpha = 0.7) + 
+  geom_smooth(
+    aes(year, lat_trail, 
+        group = survey_program, 
+        color = survey_program, 
+        linetype = "Trailing Edge"),
+    se = F, method = "lm", linewidth = 1) +
+  scale_color_gmri() +
+  scale_fill_gmri() +
+  facet_wrap(str_to_title(common_name)~., nrow = 2) +
+  guides(
+    color = guide_legend(nrow = 4, override.aes = list(alpha = 1)),
+    shape = guide_legend(nrow = 4, override.aes = list(alpha = 1, size = 2)),
+    linetype = guide_legend(nrow = 4, override.aes = list(alpha = 1))) + 
+  scale_x_continuous(limits = c(2000, 2025)) +
+  scale_y_continuous(labels = label_number(suffix = "\u00b0")) +
+  labs(
+    title = "Leading, Center, and Trail Center of Abundance",
+    subtitle = "State Survey Programs",
+    y = "Latitude",
+    x = "Longitude")
+
+# ggsave(
+#   str_c(state_surveys_out, "StateSurveys_Abundance_Centers.png"), 
+#   width = 10, bg = "white")
+
+```
+
+
+
+
+
+
+
+
+## Leading and Trailing Edges
+
+what is going on with toc
+
+
+```{r}
+#| label: leading-trailing edges
+#| echo: false
+#| message: false
+#| warning: false
+
+# Pivot to color leading and trailing
+latitudes <- centerbio %>% 
+  rename(
+    leading_edge = lat_lead,
+    center = med_lat,
+    trailing_edge = lat_trail) %>% 
+    pivot_longer(
+      cols = c(leading_edge, center, trailing_edge),
+      names_to = "metric", values_to = "latitude")
+
+# Facet by survey and species
+ggplot(latitudes) +
+  geom_point(
+    aes(x = year, y = latitude, color = metric), 
+    alpha = 0.4, size = 1.2) +
+  geom_smooth(
+    aes(x = year, y = latitude, color = metric), 
+    alpha = 0.5, method = "gam", se = FALSE, fill = "#e9e9e9") +
+  facet_grid(
+    survey_program~common_name, scales = "free_y", 
+    labeller = labeller(
+      survey_program = label_wrap_gen(width = 8),
+      common_name = label_wrap_gen(width = 8))) +
+  scale_color_gmri() +
+  scale_x_continuous(limits = c(2000, 2025)) +
+  guides(col = guide_legend(title = "Edges")) +
+  labs(
+    title = "Leading, center, and trailing latitudes",
+    y = "Latitude",
+    x = "Year") 
+    
+# 
+ggsave(
+str_c(state_surveys_out, "StateSurveys_Abudance_LeadTrail.png"), width = 10, bg = "white")
+
+```
+
+
+
+### Proportion of Abundance
+
+
+```{r}
+#| label: Abundance proportions
+#| echo: false
+#| message: false
+#| warning: false
+
+## Create spatial data ----
+sf_use_s2(FALSE)
+all_surveys_sf <- all_surveys |>
+  filter(common_name %in% shortlist) %>% 
+  st_as_sf(
+    coords = c("lon", "lat"), 
+    crs = 4326, 
+    remove = FALSE, 
+    na.fail = FALSE)
+
+## Overlap with Mgmt zones ----
+all_surveys_sf <- all_surveys_sf |>
+    st_join(
+      select(council_bounds, Council, geometry), 
+      join = st_within)
+
+## Calc proportion ----
+abundance_prop <- all_surveys_sf |>
+  st_drop_geometry() |>
+  filter(!is.na(Council)) |>
+  group_by(Council, common_name, year) |>
+  summarise(abundance = sum(abundance, na.rm = TRUE)) |>
+  ungroup() |>
+  group_by(common_name, year) |>
+  mutate(
+    total = sum(abundance),
+    prop_abundance = abundance/total) |>
+  ungroup() %>% 
+  mutate(Council = factor(Council, levels = c("New England", "Mid-Atlantic", "South Atlantic")))
+
+
+## Plot ----
+abundance_prop %>% 
+  filter(common_name %in% "atlantic mackerel") %>% 
+  ggplot() +
+  geom_col(
+    aes(x = year, y = abundance, fill = Council, group = Council),
+    position = "fill", color = "white", alpha = 0.85, width = 1, linewidth = 0.2) +
+  facet_wrap(~str_to_sentence(common_name), nrow = 2) +
+  scale_x_continuous(limits = c(2007,2025), expand = expansion(add = c(1,1))) +
+  scale_y_continuous(expand = expansion(add = c(0,0))) +
+  scale_fill_manual(values = c("#363b45", "#00608a","#C1DEFF"))  +
+  scale_color_manual(values = c("#363b45", "#00608a","#C1DEFF"))  +
+  labs(
+    title = "Proportion of Total Survey Abundances \nby Species in Each Council Region",
+    y = "Proportion of Total Abundance",
+    x = "Year")
+
+
+
+
+ggsave(str_c(state_surveys_out, "Council_Abundance_Proportion.png"), width = 10, bg = "white")
+
+```
+
+
+# Presence/Absence Persistence
+
+What kind of super heatmap could we use here to flag presence/absence in a quick way:
+
+```{r}
+#| label: state survey presence and absence
+
+# Rows by survey/council, facets by species 
+presence_absence_df <- abundance_prop %>% 
+  expand(year, Council, common_name) %>% 
+  left_join(abundance_prop) %>% 
+  mutate(
+    Council = factor(Council, levels = c("New England", "Mid-Atlantic", "South Atlantic")),
+    Council = fct_rev(Council),
+    present = if_else(total > 0 | is.na(total) == F, "Present", "Absent"),
+    present = if_else(is.na(total), "Absent", present),
+    persistent = if_else(
+      lag(present, 2) == "Present" & 
+        lag(present, 1) == "Present" &
+         present == "Present",
+      "Persistent",
+      NA_character_),
+    tile_width = case_match(
+      present,
+      "Present" ~ 0.9, 
+      "Absent" ~ 0.7),
+    tile_height = case_match(
+      present,
+      "Present" ~ 0.9, 
+      "Absent" ~ 0.7))
+
+
+## Plot ----
+ggplot(presence_absence_df) +
+  geom_tile(
+    aes(year, Council, fill = present, height = tile_height, width = tile_width), 
+    color = "gray95", 
+    linewidth = 0.05, 
+    alpha = 0.9) +
+  facet_wrap(~ common_name, ncol = 1) +
+  scale_x_continuous(
+    limits = c(2008, 2025),
+    expand = expansion(add = c(0,0))) +
+  scale_color_manual(
+    values = c(
+      "Persistent" = gmri_cols("warm yellow")),
+      na.value = "transparent", 
+    na.translate = F) +
+  scale_fill_manual(
+    values = c(
+      "Present" = gmri_cols("gmri blue"),
+      "Absent" = "gray90"), 
+     na.value = "transparent", 
+    na.translate = F) +
+  theme_gmri_simple() +
+  labs(
+    title = "State Survey Programs",
+    subtitle = "Presence, absence, persistence of atlantic coast species on the move",
+       y = "", fill = "Presence/Absence")
+
+# Get presence/absence by council, make something cool
+
+```
+
+
+
+
+
+
+```{r}
+#| label: start to finish map of Gulf of Maine
+
+# library(rnaturalearth) # this package has the shapefiles for states and countries
+# library(rnaturalearthhires) # You need to install this to download the higher resolution ones^
+# library(sf) # This package lets you use shapefiles in R with ggplot
+# library(shadowtext) # this lets you put text with white border on map so you can read it
+# library(ggplot2) # build your plot
+# 
+# 
+# # Load the Polygons for mapping
+# us_states <- ne_states("united states of america", returnclass = "sf") 
+# canada = ne_states("canada", returnclass = "sf")
+# 
+# 
+# # Make a dataframe to hold the labels you want to place
+# # can add angle in as well if you need to angle them for better placement
+# # Add or remove as needed
+# area_labs <- data.frame(
+#   "label" = c("Gulf of Maine"),
+#   "lat"   = c(42.8),
+#   "lon"   = c(-68.5),
+#   "angle" = c(0))
+# 
+# # Ocean background as a rectangle
+# ocean_backdrop <- data.frame(
+# "xmin" = -100,
+# "xmax" = -50,
+# "ymin" = 30,
+# "ymax" = 60)
+# 
+# # Full map of GOM
+# ggplot() +
+#     geom_rect(data = ocean_backdrop, aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax), 
+#     fill = "lightblue", alpha = 0.3) +
+#     geom_sf(
+#       data = us_states, 
+#       fill = "gray90", 
+#       linewidth = .25) +
+#     geom_sf(
+#       data = canada, 
+#       fill = "gray90", 
+#       linewidth = .25) +
+#     shadowtext::geom_shadowtext(
+#       data = area_labs, 
+#       aes(lon, lat, label = label, angle = angle), 
+#       size = 8, family = "Avenir", color = "black", bg.colour = "white") +
+#     coord_sf(
+#       xlim = c(-71.5, -66.4), 
+#       ylim = c(41, 45.2), 
+#       expand = F) +
+#     map_theme(legend.position = "none") +
+#     labs(title = "Gulf of Maine Map")
+
+
+```
+
+
+
