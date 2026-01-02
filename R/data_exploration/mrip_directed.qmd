@@ -65,6 +65,10 @@ all_dirtrips <- tibble("file_path" = list.files(path, pattern = ".csv", full.nam
 head(all_dirtrips) # okay cool that worked.
 # str(all_dirtrips)
 # summary(all_dirtrips)
+
+## Save out for later
+write_csv(x = all_dirtrips, file = here("data","MRIP", "MRIP_Directed_Trips_All.csv"))
+
 ```
 
 ```{r}
@@ -76,36 +80,31 @@ directed_trips <- all_dirtrips |>
   mutate(state = str_to_title(state)) |>
   mutate(across(c(target_species, fishing_mode, fishing_area), str_to_sentence))
 
-## Year check 
-atlantic_mackerel <- directed_trips |>
-  filter(target_species == "Atlantic mackerel") |>
-  arrange(year)
-unique(atlantic_mackerel$year) # 2004-2024, missing 2007
-
-black_sea_bass <- directed_trips |>
-  filter(target_species == "Black sea bass") |>
-  arrange(year)
-unique(black_sea_bass$year) # 2005-2025, missing 2011
-
-summer_flounder <- directed_trips |>
-  filter(target_species == "Summer flounder") |>
-  arrange(year)
-unique(summer_flounder$year) # 2001-2023 
-
-striped_bass <- directed_trips |>
-  filter(target_species == "Striped bass") |>
-  arrange(year)
-unique(striped_bass$year) # 2000-2003
-
 # Need atlantic croaker? 
 
-
-MRIP.dirtrips(intdir = here("data"), common="SCUP", st=25, styr=1982, endyr=1985,trips=1, dom=dom1) # this appears to be the closest thing to correct so far...
-
-# MRIP.dirtrips(intdir = "https://www.st.nmfs.noaa.gov/st1/recreational/MRIP_Survey_Data/CSV/ps_1981_1989_csv", common="SCUP", st=25, styr=1982, endyr=1985,trips=1, dom=dom1)
-
-# From the data handbook ----
-dom1 <- list(wave=list(c(1,2,3,4,5,6))) 
-dirtrips_smackerel <- MRIP.dirtrips(intdir = here("data"), common = 'SPANISH MACKEREL', st = 37, styr = 2020, endyr = 2020, trips = 1, dom = dom1) # okay that worked - figure out how to extract all that data from the internet and build out the sub folders 
 ```
+Going to focus on the most complete dataset at the moment while we wait for a complete data pull (I'm giving up on trying to pull it from the index itself). The goal is to have a test case of one species across all the datasets to present to the oversight team. In this case, that is summer flounder.
+
+```{r}
+#| label: directed trip plot
+
+summer_flounder |> 
+  group_by(year, state, fishing_area) |>
+  summarise(trips = sum(directed_trips)) |>
+  distinct() |>
+ggplot() +
+  geom_area(aes(year, trips), fill = gmri_cols("gmri blue"), alpha = 0.6, color = gmri_cols("gmri blue")) +
+  # facet_wrap(~state, scales = "free") +
+  facet_nested(state*fishing_area~., scales = "free",
+               nest_line = T) +
+  theme(strip.text.y = element_text(angle = 0)) +
+  scale_y_continuous(labels = label_comma()) +
+  labs(
+    x = "Year",
+    y = "Recreactional Angler Trips"
+  )
+
+```
+
+I think we ultimately want effort, which would be the proportion of catch to directed trips...? That would be a separate pull from the MRIP query site The data we currently have is filtered to primary target. Other options include secondary target, harvest observed, harvest landed, and released alive. Follow up with Kathy maybe... 
 

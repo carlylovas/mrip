@@ -57,8 +57,6 @@ conflicted::conflict_prefer("filter", "dplyr", quiet = T)
 conflicted::conflict_prefer("lag", "dplyr", quiet = T)
 conflicted::conflict_prefer("select", "dplyr", quiet = T)
 
-
-
 # Theme
 theme_set(
   theme_gmri( # simple
@@ -150,9 +148,6 @@ mrip_catch <- mrip_catch %>%
     species = str_replace(species, "striped bass", "atlantic striped bass"),
   )
 
-
-
-  
 ```
 
 ### Data Dictionary / "Schema"
@@ -1269,7 +1264,7 @@ mrip_effort %>%
   theme(strip.text.y = element_text(angle = 0)) +
   scale_y_continuous(labels = label_comma()) +
   labs(
-    x = "Year",
+    x = "Year", 
     y = "Recreactional Angler Trips"
   )
   

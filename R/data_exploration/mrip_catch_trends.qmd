@@ -1,0 +1,433 @@
+---
+title: "MRIP Catch Trends"
+format: 
+  html:
+    toc: true
+    self-contained: true
+    fig-dpi: 300
+execute: 
+  echo: false
+  warning: false
+  message: false
+  comment: ""
+  fig.align: center
+---
+
+Here we're combining the initial data exploration by A. Kemberling, which utilized aggregated recreational data from the ACCSP Data Warehouse, with the species specific MRIP directed trips data as compiled by C. Lovas. The goal is to create a holistic view of recreational fishing effort and catch trends across the mid- and north Atlantic regions. 
+
+```{r}
+#| label: packages
+# Load packages
+library(here)
+library(sf)
+library(rnaturalearth)
+library(gmRi)
+library(tidyverse)
+library(ggh4x)
+library(scales)
+library(Kendall)
+library(gtExtras)
+library(ggh4x)
+library(ggforce)
+library(ecodata)
+#remotes::install_github("coolbutuseless/ggpattern")
+library(ggpattern)
+library(patchwork)
+conflicted::conflict_prefer("filter", "dplyr", quiet = T)
+conflicted::conflict_prefer("lag", "dplyr", quiet = T)
+conflicted::conflict_prefer("select", "dplyr", quiet = T)
+
+# Load the northeast coast state boundaries
+
+# Polygons for mapping
+us_states <- ne_states("united states of america", returnclass = "sf") 
+canada = ne_states("canada", returnclass = "sf")
+mexico = ne_states("mexico", returnclass = "sf")
+atl_states <- ne_states("united states of america", returnclass = "sf") %>% 
+  filter(postal %in% c("VA", "MD", "DE", "NJ", "NY", "CT", "RI", "MA", "ME", "NH"))
+
+
+# Load the Council Boundaries
+
+# # Path to other survey design shapes:
+shapefiles_path <- cs_path("res", "Shapefiles")
+council_bounds <- read_sf(str_c(shapefiles_path, "CouncilBoundryCCC/Council_Scopes.shp")) %>% 
+  filter(Council %in% c("Mid-Atlantic", "New England", "South Atlantic") ) %>% 
+  st_make_valid() %>% 
+  mutate(Council = factor(Council, levels = c("New England", "Mid-Atlantic", "South Atlantic")))
+
+
+# States North to South
+states_ns <- c(
+  "Maine",
+  "New Hampshire",
+  "Massachusetts",
+  "Rhode Island",
+  "Connecticut",
+  "New York",
+  "New Jersey",
+  "Delaware",
+  "Maryland",
+  "Virginia",
+  "North Carolina",
+  "South Carolina",
+  "Georgia",
+  "Florida",
+  "Alabama",
+  "Mississippi",
+  "Louisiana"
+)
+
+region_levels <- c(
+  "North Atlantic",
+  "Mid Atlantic",
+  "South Atlantic",
+  "Gulf of Mexico"
+)
+
+```
+
+```{r}
+#| label: load mrip data
+
+# Data
+## Catch estimates
+mrip_catch <- read_csv(here::here("data/MRIP/Catch_Estimates.csv")) %>% 
+  janitor::clean_names() %>% 
+  mutate(common_name = tolower(common_name),
+         state = str_to_title(state),
+         state = factor(state, levels = states_ns),
+         region = factor(region, levels = region_levels))
+  
+mrip_catch <- mrip_catch |> 
+  mutate(species = sub("^(.*?),\\s*(.*)$", "\\2 \\1", mrip_catch$common_name)) %>% 
+  mutate(
+    species = str_replace(species, "shark, dogfish", "dogfish"),
+    species = str_replace(species, "striped bass", "atlantic striped bass"),
+  )
+
+## Effort
+# mrip_effort <- read_csv(here::here("data/MRIP/Recreational_MRIP_Effort_Estimates.csv")) %>% 
+#   janitor::clean_names() %>% 
+#   mutate(
+#     state = str_to_title(state),
+#     state = factor(state, levels = states_ns),
+#     region = factor(region, levels = region_levels))
+
+
+## Directed trips
+mrip_direct_trips <- read_csv(here("data", "MRIP", "MRIP_Directed_Trips_All.csv")) |>
+  filter(estimate_status == "FINAL" & does_directed_trips_meet_mrip_standard == "YES") |>
+  select(year, target_species, state, fishing_mode, fishing_area, directed_trips) |>
+  mutate(state = str_to_title(state)) |>
+  mutate(across(c(target_species, fishing_mode, fishing_area), str_to_sentence))
+
+### Restructure to match catch data
+mrip_direct_trips |>
+  mutate(species = tolower(target_species)) |>
+  mutate(region = case_when(
+    state %in% c("Maine", "New Hampshire", "Massachusetts", "Connecticut", "Rhode Island") ~ "North Atlantic",
+    state %in% c("New York", "New Jersey", "Maryland", "Delaware", "Virginia") ~ "Mid Atlantic",
+    state %in% c("North Carolina", "South Carolina", "Georgia", "Florida") ~ "South Atlantic"
+  ))
+```
+
+
+The steps needed to save the table are:
+ * subset the catch for that species
+ * expand on state * region * year to capture gaps
+ * estimate trends
+ * determine messaging/takeaways
+ * create tables
+
+This fist chunk pulls the catch for each species:
+
+```{r}
+#| label: export concise tables for shortlist species
+
+# Too many species, pick a handful
+shortlist <- c(
+  "atlantic mackerel", "atlantic striped bass", "black sea bass", 
+  "golden tilefish", "goosefish", "scup",  "spiny dogfish",
+  "summer flounder")
+
+# Pull the catch
+shortlist_catch <- map(setNames(shortlist, shortlist), function(x){
+  
+  # Filter data for that species
+  species_x <- mrip_catch %>% 
+    filter(tolower(species) == str_to_lower(x))
+  
+  catch_expanded <- species_x %>% 
+    expand(year, state) %>% 
+    left_join(species_x) %>% 
+    mutate(
+      harvest_a_b1_numbers = if_else(
+        is.na(harvest_a_b1_numbers), 0, harvest_a_b1_numbers),
+      total_catch_a_b1_b2_numbers = if_else(is.na(total_catch_a_b1_b2_numbers), 0, total_catch_a_b1_b2_numbers)) %>% 
+    mutate(
+      region = case_when(
+        state %in% c("Maine", "New Hampshire", "Massachusetts", "Rhode Island", "Connecticut") ~ "North Atlantic",
+        state %in% c("New York", "New Jersey", "Delaware", "Maryland", "Virginia") ~ "Mid Atlantic",
+        state %in% c("North Carolina", "South Carolina", "Georgia", "Florida") ~ "South Atlantic",
+        state %in% c("Florida", "Alabama", "Mississippi", "Louisiana", "Texas") ~ "Gulf of Mexico"),
+      region = factor(region, levels = region_levels))
+
+
+})
+```
+
+This next one does the trends and messaging:
+
+```{r}
+#| label: trends for the shortlist species
+
+# Get the trends
+shortlist_trends <- map(shortlist_catch, function(x){
+  
+    # Get the trends within each state:
+    region_trends <- x %>% 
+      group_by(year) %>% 
+      summarise(
+        total_catch_annual = sum(harvest_a_b1_numbers, na.rm = T), .groups = "drop") %>%
+      left_join(x) %>% 
+      mutate(
+        region_state = str_c(region, state, sep = "_"),
+        harvest_frac = round(harvest_a_b1_numbers/total_catch_annual, 2)*100,
+        harvest_frac = if_else(is.na(harvest_frac), 0, harvest_frac),
+        presence     = if_else(total_catch_a_b1_b2_numbers > 0, 1, 0)) %>% 
+      split(.$region_state) %>% 
+      map_dfr(function(x){
+        
+        
+        # Make sure we're going in order
+    x_ts <- arrange(x, year) %>% 
+      tail(15)
+    
+    # If there is not enough data, say it
+    # if(nrow(x_ts) < 5){
+    if(x_ts %>%
+       filter(x_ts$harvest_a_b1_numbers > 0) %>%
+       nrow() < 5){
+      return(
+        tibble(
+          "presence" = list(x_ts$presence),
+          "total_catch" = list(x_ts$harvest_a_b1_numbers), # Shows a flat line
+          #"total_catch" = NA, # Shows sparkline as blank
+          
+          #"catch_trend" = NA_character_, # Reports text as Blank
+          "catch_trend" = "Limited Data", # Reports data limitation
+          
+          "harvest_fraction" = list(x_ts$harvest_frac),
+          # "harvest_fraction" = NA,
+          
+          #"fract_trend" = NA_character_,
+          "fract_trend" = "Limited Data" # Reports data limitation
+        )
+          )}
+    
+    # If theres sufficient data, test it'
+    
+    # Tends in state catch
+    catch_trend    <- trend::mk.test(x_ts$harvest_a_b1_numbers)$p.value < 0.05
+    catch_rate     <- coef(lm(harvest_a_b1_numbers ~ year, data = x_ts))[[2]]
+    catch_rate_msg <- if_else(catch_rate > 0, "Increasing", "Decreasing")
+    catch_msg <- ifelse(
+      catch_trend, 
+      catch_rate_msg,
+      "Stable")
+    
+    # Trends in the fraction of total catch
+    fract_trend    <- trend::mk.test(x_ts$harvest_frac)$p.value < 0.05
+    fract_rate     <- coef(lm(harvest_frac ~ year, data = x_ts))[[2]]
+    fract_rate_msg <- if_else(fract_rate > 0, "Increasing", "Decreasing")
+    fract_msg <- ifelse(
+      fract_trend, 
+      fract_rate_msg,
+      "Stable")
+    
+    # Return the trend result and a list column of the data
+    return(
+      tibble(
+        "presence" = list(x_ts$presence),
+        "total_catch" = list(x_ts$harvest_a_b1_numbers),
+        "catch_trend" = catch_msg,
+        "harvest_fraction" = list(x_ts$harvest_frac),
+        "fract_trend" = fract_msg))
+
+
+        }, .id = "var_area") %>% 
+  
+# Split the var area column back
+  separate(var_area, into = c("region", "state"), sep = "_") %>% 
+  mutate(
+    state = factor(state, levels = states_ns),
+    region = factor(region, levels = region_levels)) %>% 
+  # Labels for catch trends
+  dplyr::mutate(
+    catch_dir =  case_match(
+      catch_trend,
+      "Stable" ~ "minus",
+      "Increasing" ~ "arrow-up",
+      "Decreasing" ~ "arrow-down",
+      "Limited Data" ~ NA_character_),
+    .before = "harvest_fraction") |>
+  # Labels for harvest trends
+  dplyr::mutate(
+    fract_dir =  case_match(
+      fract_trend,
+      "Stable" ~ "minus",
+      "Increasing" ~ "arrow-up",
+      "Decreasing" ~ "arrow-down",
+      "Limited Data" ~ NA_character_))  %>% 
+  arrange(region, state) 
+
+})
+```
+
+Here the tables are made:
+
+```{r}
+# Save the tables
+mrip_tables <- shortlist_trends %>% 
+  imap(function(trends_x, species_x){
+    
+    # Load the species image
+    # Paths to species png 
+    # species_png <- species_illustrations(tolower(species_x))
+    
+    # Make the table on proportions only
+    trends_table <- trends_x %>% 
+      arrange(region, state) %>% 
+      filter(region != "Gulf of Mexico") %>% 
+      gt::gt(groupname_col = "region") %>% 
+      tab_header(
+        title = html(str_c("Species of Interest: ", str_to_title(species_x))), #"<br>", local_image(here::here(species_png), height = 75))),
+        subtitle =  "MRIP Recreational Harvest Trends of the Last 15 Years")  %>%
+        tab_options(row_group.as_column = T)  %>%
+        # Add a Sparkline for catch
+        gtExtras::gt_plt_sparkline(
+          column = total_catch, 
+          type = "shaded",
+          palette = c(
+            "black", 
+            rep("transparent", 3), 
+            gmri_cols("gmri blue")), 
+          same_limit = F) %>% 
+        # Presence/Absence Indication
+        gtExtras::gt_plt_winloss(
+          presence, type = "pill", 
+          palette = c(gmri_cols("blue economy teal"), "lightgray", "lightgray")) %>%
+        # Sparkline for the fraction of annual catch
+        gtExtras::gt_plt_sparkline(
+          column = harvest_fraction, 
+          type = "shaded",
+          palette = c(
+            "black", 
+            "black", 
+            rep("transparent", 2), 
+            gmri_cols("lv orange")), 
+          same_limit = T) %>% 
+        # Up/down arrows
+        fmt_icon(
+          columns = ends_with("dir"),
+          fill_color = c(
+            "minus" = "lightgray",
+            # "arrow-up" = "seagreen", 
+            # "arrow-down" = "tomato"
+            "arrow-up" = gmri_cols("blue economy teal"), 
+            "arrow-down" = gmri_cols("lv orange")
+            ))  %>% 
+        # Spanner for the takeaway sections
+        tab_spanner(
+          label = "Total Catch Trends:",
+          columns = c(total_catch, catch_trend, catch_dir)) %>% 
+        # Spanner for the harvest fraction trends
+        tab_spanner(
+          label = "Catch Proportion Trends:",
+          columns = c(harvest_fraction, fract_trend, fract_dir)) %>% 
+        fmt_missing(
+          columns = everything(), 
+          missing_text = "") %>% 
+        cols_label(
+          presence = "Presence/Absence",
+          state = "State",
+          total_catch = "Total Recreational Harvest",
+          catch_trend = "Catch Trend",
+          catch_dir = "",
+          harvest_fraction = "% of Recreational Harvest",
+          fract_trend = "Proportion Trend",
+          fract_dir = "",) |>
+        cols_align(
+          align = "left",
+          columns = "state") %>% 
+        opt_vertical_padding(scale = 0.5) %>%
+        # # enforce the order groups
+        # row_group_order(
+        #   groups = region_levels[1:3]) %>%
+        opt_table_font(font = list(google_font(name = "Avenir")))
+    
+    return(trends_table)
+  })
+
+
+mrip_tables$`atlantic mackerel`
+```
+
+
+Now save those out somewhere that others can review them:
+
+```{r}
+#| label: export scorecard tables
+#| eval: false
+
+scorecard_path <- cs_path("mills", "Projects/MAFMC_SpeciesShifts/Species_Shift_Metrics/Fishery_Dependent/MRIP_Scorecard_Tables")
+iwalk(mrip_tables, function(table_x, species_x){
+  gtsave(
+    data = table_x, 
+    #filename = here::here(str_c("data/figures/MRIP_Scorecard_Tables/", species_x, "_mrip_table.png")))
+    filename = str_c(scorecard_path, species_x, "_mrip_table.png"))
+})
+
+```
+
+Revising Adam's code to find trends in directed trips . 
+```{r}
+#| label: directed trips trends
+
+# Get the trends
+## Testing with summer flounder
+mrip_direct_trips |>
+  filter(target_species == "Summer flounder") |>
+      group_by(year) %>% 
+      summarise(
+        total_trips_annual = sum(directed_trips, na.rm = T), .groups = "drop") %>%
+      left_join(mrip_direct_trips |> filter(target_species == "Summer flounder")) %>% 
+      mutate(
+        area_state = str_c(fishing_area, state, sep = "_"),
+        trip_frac = round(directed_trips/total_trips_annual, 2)*100,
+        trip_frac = if_else(is.na(trip_frac), 0, trip_frac),
+        presence     = if_else(directed_trips > 0, 1, 0))  -> x
+
+
+# Tends in state catch
+trip_trend    <- trend::mk.test(x$directed_trips)$p.value < 0.05
+trip_rate     <- coef(lm(directed_trips ~ year, data = x))[[2]]
+trip_rate_msg <- if_else(trip_rate > 0, "Increasing", "Decreasing")
+trip_msg <- ifelse(
+  trip_trend, 
+  trip_rate_msg,
+  "Stable")
+    
+# Trends in the fraction of total catch
+fract_trend    <- trend::mk.test(x$trip_frac)$p.value < 0.05
+fract_rate     <- coef(lm(trip_frac ~ year, data = x))[[2]]
+fract_rate_msg <- if_else(fract_rate > 0, "Increasing", "Decreasing")
+fract_msg <- ifelse(
+  fract_trend, 
+  fract_rate_msg,
+  "Stable")
+    
+## CSL: Okay, I think I have a better grasp on what each of these functions within the plotting function are doing; I'm going to try to re-run with code that generates the score cards with the directed trips data. I will need to figure out how best to incorporate the trip area (inshore/offshore) and mode (trip type)
+```
+ 
