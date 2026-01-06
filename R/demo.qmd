@@ -1,0 +1,80 @@
+---
+title: "Summary Demonstration"
+format: 
+  html:
+    toc: true
+    self-contained: true
+execute: 
+  echo: false
+  warning: false
+  message: false
+  comment: ""
+  fig.align: center
+---
+
+## Summer Flounder
+
+Below you'll find a number of visualization of varying data sets all aimed to describe the changes in the ecology and fishery of Summer flounder, *Paralichthys dentatus*. The data behind these visualizations span a number of states, agencies, and confidentiality restrictions. For more information regarding the origin of this information, please contact [clovas\@gmri.org](mailto:clovas@gmri.org).
+
+```{r}
+#| label: libraries and paths
+#| echo: false
+
+library(tidyverse)
+
+box_path <- "/Users/clovas/Library/CloudStorage/Box-Box/Mills Lab/Projects/"
+mafmc_metrics <- paste0(box_path, "MAFMC_SpeciesShifts/Species_Shift_Metrics/")
+fed_fishery   <- paste0(mafmc_metrics, "Federal_Fishery_Independent/")
+state_fishery <- paste0(mafmc_metrics, "State_Fishery_Independent/")
+fishery_dep   <- paste0(mafmc_metrics, "Fishery_Dependent/")
+```
+
+### NMFS Northeast Fisheries Science Center Spring-Fall Bottom Trawl
+
+```{r}
+#| label: trawl
+knitr::include_graphics(here::here("data","summerflounder.png"))
+```
+
+### NOAA Fisheries Vessel Trip Reports
+
+```{r}
+#| label: vtr
+
+knitr::include_graphics(paste0(fishery_dep, "VTR/Latitude accumulation maps/summer flounder.png"))
+```
+
+### NOAA Fisheries Greater Atlantic Regional Fisheries Offices
+
+#### Fisheries permits
+
+```{r}
+#| label: permits
+
+knitr::include_graphics("~/Documents/mesg-permits/summer flounder_license.gif")
+```
+
+#### Fisheries landings
+
+```{r}
+#| label: landings
+```
+
+### NOAA Fisheries Marine Recreational Information Program
+
+```{r}
+#| label: mrip
+knitr::include_graphics(paste0(fishery_dep, "MRIP_Scorecard_Tables/summer flounder_mrip_table.png"))
+
+knitr::include_graphics(here::here("demo_table.png"))
+```
+
+### State surveys
+
+```{r}
+#| label: neamap
+
+knitr::include_graphics(paste0(state_fishery, "StateSurveys_DecadalCentroid_Maps.png"))
+
+```
+```

@@ -429,5 +429,222 @@ fract_msg <- ifelse(
   "Stable")
     
 ## CSL: Okay, I think I have a better grasp on what each of these functions within the plotting function are doing; I'm going to try to re-run with code that generates the score cards with the directed trips data. I will need to figure out how best to incorporate the trip area (inshore/offshore) and mode (trip type)
+
+### CSL (at a later date): Okay, maybe not. 
+
 ```
  
+I'm going to maintain Adam's MRIP Effort Scorecards as they are, and keep the direct trips trends as a separate analyses/visualization. This will make it easier to understand how trips are differing by state and by inshore/offshore trip types.  If there is consensus to incorporate these trends into the scorecard format, I'll revisit this. For now, I'm going to dive into an individual species case study for the purposes of demonstration. As of January 5, 2026, that species is summer flounder. 
+
+```{r}
+#| label: demo 
+
+# Start with summer flounder by state and fishing area 
+## Proportion of all trips across states, followed by proportion of trip type within each states, and their respective trends. 
+
+demo_spp <- "Summer flounder" # Using this format to make things easier to edit later 
+
+mrip_direct_trips |>
+  filter(target_species == demo_spp) |>
+  group_by(year) %>% 
+      summarise(
+      total_trips_annual = sum(directed_trips, na.rm = T), .groups = "drop") %>%
+      left_join(mrip_direct_trips |> 
+                  filter(target_species == demo_spp) |>
+                  group_by(year, state) |>
+                  summarise(directed_trips = sum(directed_trips, na.rm = T), .groups = "drop")) %>% 
+      mutate(
+        trip_frac = round(directed_trips/total_trips_annual, 2)*100,
+        trip_frac = if_else(is.na(trip_frac), 0, trip_frac)) -> state_frac
+  
+mrip_direct_trips |>
+  filter(target_species == demo_spp) |>
+  group_by(year, state) %>% 
+      summarise(
+      total_trips_annual = sum(directed_trips, na.rm = T), .groups = "drop") %>%
+      left_join(mrip_direct_trips |> 
+                  filter(target_species == demo_spp) |>
+                  group_by(year, state, fishing_area) |>
+                  summarise(directed_trips = sum(directed_trips, na.rm = T), .groups = "drop")) |>
+  mutate(
+        trip_frac = round(directed_trips/total_trips_annual, 2)*100,
+        trip_frac = if_else(is.na(trip_frac), 0, trip_frac)) -> trip_frac
+
+# mrip_direct_trips |>
+#   filter(target_species == demo_spp) |>
+# ggplot() +
+#   geom_area(aes(year, directed_trips), fill = gmri_cols("gmri blue"), alpha = 0.6, color = gmri_cols("gmri blue")) +
+#   # facet_wrap(~state, scales = "free") +
+#   facet_nested(state*fishing_area~., scales = "free",
+#                nest_line = T) +
+#   theme(strip.text.y = element_text(angle = 0)) +
+#   scale_y_continuous(labels = label_comma()) +
+#   labs(
+#     x = "Year",
+#     y = "Recreactional Angler Trips"
+#   ) 
+
+## Well that's terrible to look at. Trends table it is...
+state_frac |>
+  group_by(state) |>
+  nest() |> # do we do nested functions anymore...? I do
+  mutate(trends = map(data, function(x){
+    trip_trend    <- trend::mk.test(x$directed_trips)$p.value < 0.05
+    trip_rate     <- coef(lm(directed_trips ~ year, data = x))[[2]]
+    trip_rate_msg <- if_else(trip_rate > 0, "Increasing", "Decreasing")
+    trip_msg <- ifelse(trip_trend, trip_rate_msg,"Stable")
+    
+    return(
+      tibble(
+        "state_catch" = list(x$directed_trips),
+        "state_trend" = trip_msg,
+        "state_fraction" = list(x$trip_frac)))
+    })) -> state_trends
+
+trip_frac |>
+  group_by(state, fishing_area) |>
+  filter(!state == "Connecticut" & !fishing_area == "Ocean (> 3 mi)") |> # only one year of data
+  nest() |> # do we do nested functions anymore...? I do
+  mutate(trends = map(data, function(x){
+    trip_trend    <- trend::mk.test(x$directed_trips)$p.value < 0.05
+    trip_rate     <- coef(lm(directed_trips ~ year, data = x))[[2]]
+    trip_rate_msg <- if_else(trip_rate > 0, "Increasing", "Decreasing")
+    trip_msg <- ifelse(trip_trend, trip_rate_msg,"Stable")
+    
+    return(
+      tibble(
+        "trip_catch" = list(x$directed_trips),
+        "trip_trend" = trip_msg,
+        "trip_fraction" = list(x$trip_frac)))
+    })) -> trip_trends
+
+# Testing out table on trip type trends
+trip_trends |>
+  select(!data) |>
+  mutate(state = factor(state, levels = c("Maine", "New Hampshire", "Massachusetts", "Connecticut", "Rhode Island", "New York", "New Jersey", "Maryland", "Delaware", "Virginia"))) |>
+  arrange(state, fishing_area) |>
+  unnest(trends) |>
+ gt::gt(groupname_col = "state") %>% 
+      tab_header(
+        title = html(str_c("Species of Interest: ", demo_spp)), #"<br>", local_image(here::here(species_png), height = 75))),
+        subtitle =  "MRIP Directed Trip Trends of the Last 24 Years")  %>%
+        tab_options(row_group.as_column = T)  %>%
+        # Add a Sparkline for catch
+        gtExtras::gt_plt_sparkline(
+          column = trip_catch, 
+          type = "shaded",
+          palette = c(
+            "black", 
+            rep("transparent", 3), 
+            gmri_cols("gmri blue")), 
+          same_limit = F) %>% 
+        # Sparkline for the fraction of annual catch
+        gtExtras::gt_plt_sparkline(
+          column = trip_fraction, 
+          type = "shaded",
+          palette = c(
+            "black", 
+            "black", 
+            rep("transparent", 2), 
+            gmri_cols("lv orange")), 
+          same_limit = T) %>% 
+        # Spanner for the takeaway sections
+        tab_spanner(
+          label = "Total Trip Trends:",
+          columns = c(trip_catch,trip_trend)) %>%
+        # Spanner for the trip fraction trends
+        fmt_missing(
+          columns = everything(),
+          missing_text = "") %>%
+        cols_label(
+          fishing_area = "Fishing Area",
+          trip_catch = "Total Recreational Trips",
+          trip_trend = "Trip Trend",
+          trip_fraction = "% of Trip Type") |>
+        cols_align(
+          align = "left",
+          columns = "fishing_area") %>%
+        opt_vertical_padding(scale = 0.5) |>
+        opt_table_font(font = list(google_font(name = "Avenir"))) #-> demo_table # that worked cool
+
+# gtsave(demo_table, here("demo_table.png"))
+
+## Add a column after state but before trip type split to show proportion of all trips by state.
+# tab_options(row_group.as_column = T)  %>%
+
+trip_trends |>
+  select(!data) |>
+  unnest(trends) |>
+  left_join(state_trends |> select(!data) |> unnest(trends)) |>
+  mutate(state = factor(state, levels = c("Maine", "New Hampshire", "Massachusetts", "Connecticut", "Rhode Island", "New York", "New Jersey", "Maryland", "Delaware", "Virginia"))) |>
+  select(state, state_fraction, fishing_area, trip_catch, trip_trend, trip_fraction) |>
+  group_by(state) |>
+  mutate(duplicates = duplicated(state_fraction)) |>
+  mutate(state_fraction = ifelse(duplicates == "TRUE", NA, state_fraction)) |>
+  arrange(state, fishing_area) |>
+ gt::gt(groupname_col = "state") %>% 
+      tab_header(
+        title = html(str_c("Species of Interest: ", demo_spp)), #"<br>", local_image(here::here(species_png), height = 75))),
+        subtitle =  "MRIP Directed Trip Trends of the Last 24 Years")  %>%
+        tab_options(row_group.as_column = T)  %>%
+        # Add a Sparkline for state propotion
+        gtExtras::gt_plt_sparkline(
+          column = state_fraction,
+          type = "shaded",
+          palette = c(
+            "black",
+            rep("transparent", 3),
+            gmri_cols("warm yellow")),
+          same_limit = F) %>%
+        # Add a Sparkline for catch
+        gtExtras::gt_plt_sparkline(
+          column = trip_catch, 
+          type = "shaded",
+          palette = c(
+            "black", 
+            rep("transparent", 3), 
+            gmri_cols("gmri blue")), 
+          same_limit = F) %>% 
+        # Sparkline for the fraction of annual catch
+        gtExtras::gt_plt_sparkline(
+          column = trip_fraction, 
+          type = "shaded",
+          palette = c(
+            "black", 
+            "black", 
+            rep("transparent", 2), 
+            gmri_cols("lv orange")), 
+          same_limit = T) %>% 
+        # Spanner for the takeaway sections
+        tab_spanner(
+          label = "Total Trip Trends:",
+          columns = c(trip_catch,trip_trend)) %>%
+        # Spanner for the trip fraction trends
+        fmt_missing(
+          columns = everything(),
+          missing_text = "") %>%
+        cols_label(
+         state_fraction = "State Proportion",
+          fishing_area = "Fishing Area",
+          trip_catch = "Total Recreational Trips",
+          trip_trend = "Trip Trend",
+          trip_fraction = "% of Trip Type") |>
+        cols_align(
+          align = "center",
+          columns = "fishing_area") %>%
+        opt_vertical_padding(scale = 0.5) |>
+        opt_table_font(font = list(google_font(name = "Avenir"))) |>
+    tab_style(
+    style = cell_borders(sides = "right", style = "solid", color = "lightgray", weight = px(2)),
+    locations = cells_body(
+      columns = state_fraction)) |>
+  tab_style(
+    style = cell_borders(sides = "bottom", color = "transparent"),
+    locations = cells_body(
+      columns = state_fraction)) |>
+  cols_hide(duplicates) -> demo_table
+
+gtsave(demo_table, here("demo_table.png")) # cool.
+  
+```
+
