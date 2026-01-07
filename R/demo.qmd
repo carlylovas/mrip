@@ -18,8 +18,8 @@ Below you'll find a number of visualization of varying data sets all aimed to de
 ```{r}
 #| label: pic
 #| fig-align: center
-#| out-width: 500px
-#| out-height: 300px
+#| out-width: 250px
+#| out-height: 150px
 #| fig-cap: "NOAA Fisheries"
 knitr::include_graphics(here::here("data","images","MAFMC_SummerFlounder.png"))
 ```
@@ -38,6 +38,13 @@ fishery_dep   <- paste0(mafmc_metrics, "Fishery_Dependent/")
 ```
 
 ### NMFS Northeast Fisheries Science Center Spring-Fall Bottom Trawl
+```{r}
+#| label: app
+#| fig-align: center
+
+knitr::include_app(url = "https://5qflbi-carly-lovas.shinyapps.io/nmfs_species_dist/", height = "500px")
+```
+
 
 ```{r}
 #| label: trawl

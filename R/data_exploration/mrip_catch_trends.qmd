@@ -587,13 +587,14 @@ trip_trends |>
         title = html(str_c("Species of Interest: ", demo_spp)), #"<br>", local_image(here::here(species_png), height = 75))),
         subtitle =  "MRIP Directed Trip Trends of the Last 24 Years")  %>%
         tab_options(row_group.as_column = T)  %>%
-        # Add a Sparkline for state propotion
+        # Add a Sparkline for state proportion
         gtExtras::gt_plt_sparkline(
           column = state_fraction,
           type = "shaded",
           palette = c(
             "black",
-            rep("transparent", 3),
+            "black",
+            rep("transparent", 2),
             gmri_cols("warm yellow")),
           same_limit = F) %>%
         # Add a Sparkline for catch
@@ -604,7 +605,7 @@ trip_trends |>
             "black", 
             rep("transparent", 3), 
             gmri_cols("gmri blue")), 
-          same_limit = F) %>% 
+          same_limit = T) %>% 
         # Sparkline for the fraction of annual catch
         gtExtras::gt_plt_sparkline(
           column = trip_fraction, 
@@ -614,7 +615,7 @@ trip_trends |>
             "black", 
             rep("transparent", 2), 
             gmri_cols("lv orange")), 
-          same_limit = T) %>% 
+          same_limit = F) %>% 
         # Spanner for the takeaway sections
         tab_spanner(
           label = "Total Trip Trends:",
