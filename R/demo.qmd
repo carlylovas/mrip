@@ -1,5 +1,6 @@
 ---
 title: "Summary Demonstration"
+author: "Carly S. Lovas"
 format: 
   html:
     toc: true
@@ -13,8 +14,15 @@ execute:
 ---
 
 ## Summer Flounder
-
 Below you'll find a number of visualization of varying data sets all aimed to describe the changes in the ecology and fishery of Summer flounder, *Paralichthys dentatus*. The data behind these visualizations span a number of states, agencies, and confidentiality restrictions. For more information regarding the origin of this information, please contact [clovas\@gmri.org](mailto:clovas@gmri.org).
+```{r}
+#| label: pic
+#| fig-align: center
+#| out-width: 500px
+#| out-height: 300px
+#| fig-cap: "NOAA Fisheries"
+knitr::include_graphics(here::here("data","images","MAFMC_SummerFlounder.png"))
+```
 
 ```{r}
 #| label: libraries and paths
@@ -33,7 +41,13 @@ fishery_dep   <- paste0(mafmc_metrics, "Fishery_Dependent/")
 
 ```{r}
 #| label: trawl
+#| out-width: 350px
+#| out-height: 350px
+#| layout-ncol: 2
+
 knitr::include_graphics(here::here("data","summerflounder.png"))
+
+knitr::include_graphics("~/Documents/vessel_trip_reports/images/summer_flounder.gif")
 ```
 
 ### NOAA Fisheries Vessel Trip Reports
@@ -50,14 +64,28 @@ knitr::include_graphics(paste0(fishery_dep, "VTR/Latitude accumulation maps/summ
 
 ```{r}
 #| label: permits
+#| out-width: 300px
+#| out-height: 300px
+#| fig-align: left
+#| layout-ncol: 2
 
 knitr::include_graphics("~/Documents/mesg-permits/summer flounder_license.gif")
+knitr::include_graphics(here::here("data","zscore.png"))
+
 ```
 
 #### Fisheries landings
 
 ```{r}
 #| label: landings
+#| out-width: 400px
+#| out-height: 400px
+#| fig-align: left
+#| layout-ncol: 2
+
+knitr::include_graphics("~/Documents/vessel_trip_reports/images/demo_landings.png")
+knitr::include_graphics("~/Documents/vessel_trip_reports/images/demo_council.png")
+
 ```
 
 ### NOAA Fisheries Marine Recreational Information Program
@@ -77,4 +105,5 @@ knitr::include_graphics(here::here("demo_table.png"))
 knitr::include_graphics(paste0(state_fishery, "StateSurveys_DecadalCentroid_Maps.png"))
 
 ```
-```
+### Observer data
+*TBD*
